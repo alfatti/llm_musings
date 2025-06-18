@@ -8,9 +8,9 @@ def extract_pdf_text(pdf_path):
     with pdfplumber.open(pdf_path) as pdf:
         return "\n\n".join(page.extract_text() for page in pdf if page.extract_text())
 
-# --- 2. Construct the Gemini Prompt ---
-def build_prompt(rent_roll_text):
-    return """
+# --------- STEP 2: Gemini Prompt ---------
+def build_prompt(rent_roll_text: str) -> str:
+    prompt = f"""
 You are a data extraction engine. Your task is to convert a rent roll into a normalized JSON list, extracting all details at the most granular level (one row per charge per unit).
 
 ⚠️ STRICT INSTRUCTIONS:
@@ -85,7 +85,7 @@ As of Date: 10-31-2024
 💡 Correct Output (abbreviated):
 
 [
-  {
+  {{
     "account_name": "Land Lord Corporation",
     "as_of_date": "2024-10-31",
     "rent_roll_page": 1,
@@ -104,8 +104,8 @@ As of Date: 10-31-2024
     "lease_expiration": "12-31-99",
     "move_in": "01-01-2020",
     "move_out": null
-  },
-  {
+  }},
+  {{
     "account_name": "Land Lord Corporation",
     "as_of_date": "2024-10-31",
     "rent_roll_page": 1,
@@ -124,17 +124,17 @@ As of Date: 10-31-2024
     "lease_expiration": "03-31-2035",
     "move_in": "04-04-2022",
     "move_out": null
-  }
+  }}
 ]
 
 ---
 
 Now extract and return a complete JSON array in this exact structure for the following rent roll:
 \"\"\"
-{{RENT_ROLL_TEXT}}
+{rent_roll_text}
 \"\"\"
 """
-
+    return prompt
 # --- 3. Query Gemini 1.5 Pro on Vertex AI ---
 def call_gemini(prompt, project_id, location="us-central1"):
     aiplatform.init(project=project_id, location=location)

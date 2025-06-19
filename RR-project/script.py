@@ -35,6 +35,10 @@ For each charge line and each unit, extract the following 18 fields:
 - lease_expiration
 - move_in
 - move_out
+- unit_total_monthly
+- unit_total_gpr
+- unit_total_dollar_per_sqft
+- unit_total_non_gpr
 
 ---
 
@@ -77,6 +81,59 @@ As of Date: 10-31-2024
 
 2 Unit Totals:  
 7,756.68 40,200.00 45.21 49,037.3
+
+💡 Correct Output (abbreviated):
+
+[
+  {
+    "account_name": "Land Lord Corporation",
+    "as_of_date": "2024-10-31",
+    "rent_roll_page": 1,
+    "location": "10844 Plaza",
+    "unit": "1",
+    "market_rent": 3815.37,
+    "current_rent": null,
+    "tenant": "Lowe’s",
+    "next_charge_date": "02-01-2025",
+    "charge_type": "CAM charge",
+    "monthly_amount": 2515.86,
+    "gpr": 0.0,
+    "dollar_per_sqft": 0.0,
+    "non_gpr": 30000.52,
+    "gla_per_sqft": null,
+    "lease_expiration": "12-31-99",
+    "move_in": "01-01-2020",
+    "move_out": null
+    "unit_total_monthly": 3,715.86,
+    "unit_total_gpr": 0.0,
+    "unit_total_dollar_per_sqft": 0.0,
+    "unit_total_non_gpr": 42,100.52
+  },
+  {
+    "account_name": "Land Lord Corporation",
+    "as_of_date": "2024-10-31",
+    "rent_roll_page": 1,
+    "location": "10844 Plaza",
+    "unit": "2",
+    "market_rent": 7200.12,
+    "current_rent": null,
+    "tenant": "ABC",
+    "next_charge_date": "02-01-2025",
+    "charge_type": "CAM charge",
+    "monthly_amount": 250.00,
+    "gpr": 0.0,
+    "dollar_per_sqft": 2.66,
+    "non_gpr": 3008.28,
+    "gla_per_sqft": 1174.99,
+    "lease_expiration": "03-31-2035",
+    "move_in": "04-04-2022",
+    "move_out": null,
+    "unit_total_monthly": 7,756.68,
+    "unit_total_gpr": 40,200.00,
+    "unit_total_dollar_per_sqft": 45.21,
+    "unit_total_non_gpr": 49,037.3
+  }
+]
 
 ---
 

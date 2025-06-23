@@ -1,94 +1,88 @@
 import pandas as pd
 import json
-from google.cloud import aiplatform
-from google.cloud.aiplatform.generation_models import GenerationModel
-from google.auth import default
+from langchain_google_vertexai import ChatVertexAI
 
-# --- CONFIGURATION ---
-PROJECT_ID = "your-gcp-project-id"
-LOCATION = "us-central1"
-INPUT_FILE = "leases.xlsx"  # or "leases.csv"
-OUTPUT_FILE = "parsed_leases.json"
-MODEL = "gemini-1.5-pro-002"
+def extract_lease_blocks_from_table(
+    df: pd.DataFrame,
+    model_name: str = "gemini-1.5-pro-002",
+    temperature: float = 0.2,
+    max_output_tokens: int = 8192,
+) -> dict:
+    """
+    Sends a lease table to Gemini Pro 2.5 via LangChain, and returns structured lease data.
+    """
 
-# --- LOAD FILE ---
-if INPUT_FILE.endswith(".csv"):
-    df = pd.read_csv(INPUT_FILE)
-else:
-    df = pd.read_excel(INPUT_FILE)
+    table_string = df.to_markdown(index=False)
 
-table_string = df.to_markdown(index=False)
+    prompt_template = """
+You are an expert at parsing commercial lease tables.
 
-# --- CONSTRUCT PROMPT ---
-prompt = f"""
-You are an expert at extracting structured data from spreadsheet-style tables.
+The spreadsheet below contains multiple tenants, where each tenant’s data is grouped in a block of rows. Each tenant block includes:
 
-The table below contains multiple commercial lease records for different tenants. Each tenant's data is grouped in a contiguous block of rows and includes:
+1. Lease Summary: general info like Property, Unit(s), Tenant, Area, Lease From/To, Monthly Rent, etc.
+2. Rent Steps: rows showing rent changes over time
+3. Charge Schedule: rows showing CAM, utilities, insurance, etc.
+4. Amendments: lease status changes, activation dates, notes
 
-1. Lease Summary: general lease info like property name (with ID), unit(s), tenant name (with ID), lease dates, rent values, etc.
-2. Rent Steps: rent changes over time
-3. Charge Schedule: CAM and operating charges
-4. Amendments: summary of changes and dates
+---
 
 Your task is to:
-- Segment the table into chunks per tenant
+- Identify each tenant’s data block
 - Extract:
-    - Property Name and Property ID (e.g., "ABC Center (br1234)")
-    - Tenant Name and Tenant ID (e.g., "Banana LLC (psb01234)")
-- Structure each chunk into a dictionary with the following format:
+    - Tenant Name (e.g. "Banana Partners & Associates, LLC")
+    - Tenant ID (from parentheses, e.g. psb01234)
+    - Property Name (e.g. "ABC Center 18")
+    - Property ID (from parentheses, e.g. br1234)
+- Output each tenant as an entry in a top-level JSON dictionary
 
-{
-  "Tenant Name": {
-    "Tenant ID": "...",
-    "Property": "...",
-    "Property ID": "...",
-    "Lease Summary": {{...}},
-    "Rent Steps": [{{...}}, ...],
-    "Charge Schedule": [{{...}}, ...],
-    "Amendments": [{{...}}, ...]
-  },
-  ...
-}
+Each tenant’s data must be formatted as:
 
-Make sure to:
-- Extract all monetary values as numbers
-- Format dates as YYYY-MM-DD
-- Use `null` for any missing field
-- Do not summarize or skip any tenant
-- Do not wrap the JSON in markdown code blocks
+- Key: Tenant Name (string)
+- Value: dictionary with the following keys:
+    - "Tenant ID": string
+    - "Property": string
+    - "Property ID": string
+    - "Lease Summary": dictionary of lease metadata
+    - "Rent Steps": list of dictionaries
+    - "Charge Schedule": list of dictionaries
+    - "Amendments": list of dictionaries
 
-Here is the input table:
+---
+
+🛑 JSON Format Requirements:
+- Output must be valid JSON
+- DO NOT use triple backticks (```) or markdown
+- All keys and strings must use double quotes ("")
+- If any value is missing, set it to null
+- DO NOT skip any of the required keys
+- DO NOT include explanations or extra text — only return the JSON
+
+---
+
+Here is the input spreadsheet:
 
 <spreadsheet>
-{table_string}
-</spreadsheet>
-"""
+{}</spreadsheet>
+""".format(table_string)
 
-# --- INIT GENAI ---
-aiplatform.init(project=PROJECT_ID, location=LOCATION)
+    # Initialize Gemini via LangChain
+    model = ChatVertexAI(
+        model_name=model_name,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+    )
 
-model = GenerationModel(
-    model_name=MODEL,
-    generation_config={"temperature": 0.2, "max_output_tokens": 8192}
-)
+    response = model.invoke(prompt_template)
+    raw_output = response.content.strip()
 
-response = model.generate_content(prompt)
+    # Strip markdown blocks if Gemini adds them anyway
+    if raw_output.startswith("```"):
+        raw_output = raw_output.strip("` \n")
+        raw_output = "\n".join(
+            line for line in raw_output.splitlines() if not line.strip().startswith("```")
+        )
 
-# --- EXTRACT & CLEAN ---
-raw_output = response.candidates[0].content.parts[0].text.strip()
-
-# Remove triple backticks if Gemini returns a markdown-formatted block
-cleaned = raw_output
-if cleaned.startswith("```json") or cleaned.startswith("```"):
-    cleaned = cleaned.strip("` \n")
-    lines = cleaned.splitlines()
-    cleaned = "\n".join(line for line in lines if not line.strip().startswith("```"))
-
-try:
-    parsed = json.loads(cleaned)
-    with open(OUTPUT_FILE, "w") as f:
-        json.dump(parsed, f, indent=2)
-    print(f"✅ Parsed lease data saved to {OUTPUT_FILE}")
-except json.JSONDecodeError as e:
-    print("⚠️ Could not decode JSON. Here's the raw output:\n")
-    print(raw_output)
+    try:
+        return json.loads(raw_output)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"❌ Gemini returned malformed JSON:\n\n{raw_output}") from e

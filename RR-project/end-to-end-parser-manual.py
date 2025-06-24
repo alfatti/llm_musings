@@ -92,3 +92,25 @@ if __name__ == \"__main__\":  # pragma: no cover
     import argparse, pprint
     ap = argparse.ArgumentParser(description=\"Process a rent‑roll Excel file.\")
     ap.add_argument(\"file\", help=\"Path to .xlsx rent‑roll
+
+#-------------------------------------
+summary = []
+
+for prop_name, prop_data in rent_roll.items():
+    building_id = prop_data["buildingID"]
+    for tenant_name, tenant_data in prop_data["tenants"].items():
+        lease = tenant_data["lease"]
+        summary.append({
+            "Property": prop_name,
+            "Building ID": building_id,
+            "Tenant": tenant_name,
+            "Units": tenant_data["unit_range"],
+            "Lease From": lease.get("lease_from"),
+            "Lease To": lease.get("lease_to"),
+            "Area": lease.get("area"),
+            "# Rent Steps": len(tenant_data["rent_steps"]),
+            "# Charge Schedules": len(tenant_data["charge_schedule"]),
+            "# Amendments": len(tenant_data["amendment"]),
+        })
+
+summary_df = pd.DataFrame(summary)

@@ -114,3 +114,15 @@ for prop_name, prop_data in rent_roll.items():
         })
 
 summary_df = pd.DataFrame(summary)
+
+-------------------------------------------------
+def deep_convert(d):
+    if isinstance(d, defaultdict):
+        d = {k: deep_convert(v) for k, v in d.items()}
+    elif isinstance(d, dict):
+        d = {k: deep_convert(v) for k, v in d.items()}
+    elif isinstance(d, pd.DataFrame):
+        return d.copy()  # Optional: ensure no references
+    return d
+
+clean_dict = deep_convert(rent_roll)

@@ -22,7 +22,6 @@ RENT_STEPS_COLS = [
 # HELPERS
 # --------------------------------------------------------------------------- #
 def _as_rows(obj):
-    """Normalise *obj* (which might be a DataFrame, list-of-lists, tuple-of-lists, etc.) into a list of rows."""
     if obj is None:
         return []
     if isinstance(obj, pd.DataFrame):
@@ -32,49 +31,63 @@ def _as_rows(obj):
     return []
 
 def _rent_metrics_for_unit(rent_steps_rows, unit):
-    """Compute rent metrics for the given unit including forward-looking RentStep and EffectiveRent."""
+    """
+    Extract forward-looking rent step for the given unit:
+    - Current period: From.year == this year, To.year == this year + 1
+    - Next period   : From.year == this year + 1, To.year == this year + 2
+    """
     if not rent_steps_rows:
-        return {"NRA": None, "MonthlyRent": None, "AnnualRent": None,
-                "$/sf": None, "RentStep": None, "EffectiveRent": None}
+        return {
+            "NRA": None, "MonthlyRent": None, "AnnualRent": None,
+            "$/sf": None, "RentStep": None, "EffectiveRent": None
+        }
 
     df = pd.DataFrame(rent_steps_rows, columns=RENT_STEPS_COLS)
     df = df[df["Unit"].astype(str).str.strip() == unit]
     if df.empty:
-        return {"NRA": None, "MonthlyRent": None, "AnnualRent": None,
-                "$/sf": None, "RentStep": None, "EffectiveRent": None}
+        return {
+            "NRA": None, "MonthlyRent": None, "AnnualRent": None,
+            "$/sf": None, "RentStep": None, "EffectiveRent": None
+        }
 
-    df["From"] = pd.to_datetime(df["From"])
-    df["To"]   = pd.to_datetime(df["To"])
-    df = df.sort_values("From")
+    df["From"] = pd.to_datetime(df["From"], errors="coerce")
+    df["To"]   = pd.to_datetime(df["To"], errors="coerce")
 
-    year_now = pd.Timestamp.now().year
+    year_now = datetime.now().year
 
-    # Find "current period" and "next period" based on forward-looking logic
-    current_row = df[df["To"].dt.year == year_now]
-    next_row    = df[(df["From"].dt.year == year_now) & (df["To"].dt.year == year_now + 1)]
+    current = df[
+        (df["From"].dt.year == year_now) &
+        (df["To"].dt.year == year_now + 1)
+    ]
 
-    current = current_row.iloc[0] if not current_row.empty else None
-    next_   = next_row.iloc[0] if not next_row.empty else None
+    next_ = df[
+        (df["From"].dt.year == year_now + 1) &
+        (df["To"].dt.year == year_now + 2)
+    ]
 
-    rentstep = (next_["Annual"] - current["Annual"]) if (current is not None and next_ is not None) else None
-    effectiverent = next_["Annual"] if next_ is not None else None
+    if current.empty:
+        return {
+            "NRA": None, "MonthlyRent": None, "AnnualRent": None,
+            "$/sf": None, "RentStep": None, "EffectiveRent": None
+        }
 
-    latest = df.iloc[-1]  # still use latest for snapshot metrics
+    # Use first match in case of duplicates
+    current_row = current.iloc[0]
+    next_row    = next.iloc[0] if not next_.empty else None
 
     return {
-        "NRA"           : latest["Area"],
-        "MonthlyRent"   : latest["Monthly Amt"],
-        "AnnualRent"    : latest["Annual"],
-        "$/sf"          : latest["Amt/Area"],
-        "RentStep"      : rentstep,
-        "EffectiveRent" : effectiverent
+        "NRA": current_row["Area"],
+        "MonthlyRent": current_row["Monthly Amt"],
+        "AnnualRent" : current_row["Annual"],
+        "$/sf"       : current_row["Amt/Area"],
+        "RentStep"   : (next_row["Annual"] - current_row["Annual"]) if next_row is not None else None,
+        "EffectiveRent": next_row["Annual"] if next_row is not None else None
     }
 
 # --------------------------------------------------------------------------- #
-# MAIN FUNCTION
+# MAIN ROUTINE
 # --------------------------------------------------------------------------- #
 def unpivot_rent_roll(rent_roll: dict) -> pd.DataFrame:
-    """Flatten the nested `rent_roll` structure and compute rent metrics."""
     rows = []
 
     for property_name, prop_data in rent_roll.items():
@@ -88,8 +101,10 @@ def unpivot_rent_roll(rent_roll: dict) -> pd.DataFrame:
 
             rent_steps_rows = _as_rows(tenant_info.get("rent_steps"))
 
-            # Rename lease keys
-            lease_renamed = {LEASE_KEY_MAP.get(k, k): v for k, v in lease_info.items()}
+            lease_renamed = {
+                LEASE_KEY_MAP.get(k, k): v
+                for k, v in lease_info.items()
+            }
 
             units = [u.strip() for u in unit_range.split(",") if u.strip()]
             for unit in units:
@@ -108,7 +123,6 @@ def unpivot_rent_roll(rent_roll: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 # --------------------------------------------------------------------------- #
-# EXAMPLE USAGE
-# --------------------------------------------------------------------------- #
+# Example:
 # df = unpivot_rent_roll(rent_roll)
-# display(df.head())
+# display(df)

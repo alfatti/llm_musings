@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import datetime
 
 # --------------------------------------------------------------------------- #
 # CONFIGURATION
@@ -21,57 +22,59 @@ RENT_STEPS_COLS = [
 # HELPERS
 # --------------------------------------------------------------------------- #
 def _as_rows(obj):
-    """
-    Normalise *obj* (which might be a DataFrame, list-of-lists, tuple-of-lists, etc.)
-    into a plain Python list of rows. Guarantees that the result is iterable
-    without triggering the 'truth value of a DataFrame is ambiguous' error.
-    """
+    """Normalise *obj* (which might be a DataFrame, list-of-lists, tuple-of-lists, etc.) into a list of rows."""
     if obj is None:
         return []
     if isinstance(obj, pd.DataFrame):
         return obj.values.tolist()
     if isinstance(obj, (list, tuple)):
         return list(obj)
-    # Fallback for any other unexpected type
     return []
 
 def _rent_metrics_for_unit(rent_steps_rows, unit):
-    """
-    Extract NRA, MonthlyRent, AnnualRent, $/sf for *unit* from rent-steps rows,
-    and compute RentStep (latest annual − previous annual).
-    """
-    if not rent_steps_rows:          # no rent-step data at all
+    """Compute rent metrics for the given unit including forward-looking RentStep and EffectiveRent."""
+    if not rent_steps_rows:
         return {"NRA": None, "MonthlyRent": None, "AnnualRent": None,
-                "$/sf": None, "RentStep": None}
+                "$/sf": None, "RentStep": None, "EffectiveRent": None}
 
     df = pd.DataFrame(rent_steps_rows, columns=RENT_STEPS_COLS)
     df = df[df["Unit"].astype(str).str.strip() == unit]
-    if df.empty:                     # unit not present in rent-steps
+    if df.empty:
         return {"NRA": None, "MonthlyRent": None, "AnnualRent": None,
-                "$/sf": None, "RentStep": None}
+                "$/sf": None, "RentStep": None, "EffectiveRent": None}
 
     df["From"] = pd.to_datetime(df["From"])
-    df = df.sort_values("From")      # chronological
+    df["To"]   = pd.to_datetime(df["To"])
+    df = df.sort_values("From")
 
-    latest = df.iloc[-1]
-    prev   = df.iloc[-2] if len(df) >= 2 else None
+    year_now = pd.Timestamp.now().year
+
+    # Find "current period" and "next period" based on forward-looking logic
+    current_row = df[df["To"].dt.year == year_now]
+    next_row    = df[(df["From"].dt.year == year_now) & (df["To"].dt.year == year_now + 1)]
+
+    current = current_row.iloc[0] if not current_row.empty else None
+    next_   = next_row.iloc[0] if not next_row.empty else None
+
+    rentstep = (next_["Annual"] - current["Annual"]) if (current is not None and next_ is not None) else None
+    effectiverent = next_["Annual"] if next_ is not None else None
+
+    latest = df.iloc[-1]  # still use latest for snapshot metrics
 
     return {
-        "NRA"        : latest["Area"],
-        "MonthlyRent": latest["Monthly Amt"],
-        "AnnualRent" : latest["Annual"],
-        "$/sf"       : latest["Amt/Area"],
-        "RentStep"   : (latest["Annual"] - prev["Annual"]) if prev is not None else None
+        "NRA"           : latest["Area"],
+        "MonthlyRent"   : latest["Monthly Amt"],
+        "AnnualRent"    : latest["Annual"],
+        "$/sf"          : latest["Amt/Area"],
+        "RentStep"      : rentstep,
+        "EffectiveRent" : effectiverent
     }
 
 # --------------------------------------------------------------------------- #
-# MAIN ROUTINE
+# MAIN FUNCTION
 # --------------------------------------------------------------------------- #
 def unpivot_rent_roll(rent_roll: dict) -> pd.DataFrame:
-    """
-    Flatten the nested `rent_roll` structure so every (property, tenant, unit)
-    becomes one row, with lease fields renamed and rent-step metrics appended.
-    """
+    """Flatten the nested `rent_roll` structure and compute rent metrics."""
     rows = []
 
     for property_name, prop_data in rent_roll.items():
@@ -83,13 +86,11 @@ def unpivot_rent_roll(rent_roll: dict) -> pd.DataFrame:
             unit_range  = tenant_info.get("unit_range", "")
             lease_info  = tenant_info.get("lease", {}) or {}
 
-            # NEW: robust, ambiguity-free extraction of rent_steps
             rent_steps_rows = _as_rows(tenant_info.get("rent_steps"))
 
-            # Rename lease keys on the fly
+            # Rename lease keys
             lease_renamed = {LEASE_KEY_MAP.get(k, k): v for k, v in lease_info.items()}
 
-            # Fan-out one row per unit
             units = [u.strip() for u in unit_range.split(",") if u.strip()]
             for unit in units:
                 rent_metrics = _rent_metrics_for_unit(rent_steps_rows, unit)

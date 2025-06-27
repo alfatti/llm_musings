@@ -160,29 +160,63 @@ workflow.add_conditional_edges(
 
 graph = workflow.compile()
 
-# --------------------------------------------
-# Cell 6: Try on a Sample Page
-# --------------------------------------------
-sample_page = """
-Unit Mkt Rent Curr Rent Lease Primary Tenant Next Date Description Monthly GPR
-A101 $2000 $1950 John Doe 6/1/2024 1BD/1BA 1950 1950
-A102 $2100 $2050 Jane Smith 6/1/2024 2BD/1BA 2050 2050
-A103 $2200 $2150 Mike Ross 6/1/2024 2BD/2BA 2150 2150
-"""
+# ==========================================================
+# Cell 8  : Utility – run the LangGraph agent on one page
+# ==========================================================
+def run_agent_on_page(page_text: str) -> dict:
+    """Invoke the extractor-evaluator graph on a single page of text
+       and return a dict with page-level metadata + parsed JSON."""
+    init_state = {
+        "page_text": page_text,
+        "history": [],
+        "result": None,
+        "is_valid": False,
+        "attempts": 0,
+    }
+    final = graph.invoke(init_state)
+    out = {
+        "is_valid": final["is_valid"],
+        "attempts": final["attempts"],
+        "raw_json": final["result"],
+    }
+    try:
+        out["parsed"] = json.loads(final["result"]) if final["is_valid"] else None
+    except Exception:
+        out["parsed"] = None
+    return out
+# ==========================================================
+# Cell 9  : Process an entire PDF with pdfplumber
+# ==========================================================
+import pdfplumber
+from pathlib import Path
+import pandas as pd
 
-initial_state = {
-    "page_text": sample_page,
-    "history": [],
-    "result": None,
-    "is_valid": False,
-    "attempts": 0,
-}
+def extract_rentroll_pdf(pdf_path: str | Path) -> pd.DataFrame:
+    """
+    • Opens the PDF
+    • Runs the agent per page
+    • Concatenates all successfully-parsed units into a single DataFrame
+    """
+    records: list[dict] = []
+    failures: list[int] = []
 
-final_state = graph.invoke(initial_state)
+    with pdfplumber.open(pdf_path) as pdf:
+        for idx, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            result = run_agent_on_page(text)
+            if result["parsed"]:
+                for unit in result["parsed"]:
+                    unit["_page"] = idx          # keep page reference
+                    records.append(unit)
+            else:
+                failures.append(idx)
+                print(f"⚠️  Page {idx} failed after {result['attempts']} attempts.")
 
-# --------------------------------------------
-# Cell 7: Final Output
-# --------------------------------------------
-print("✅ Final JSON output:")
-print(final_state["result"])
-print("\nAttempts:", final_state["attempts"])
+    df = pd.DataFrame(records)
+    if failures:
+        print(f"\nFinished with {len(failures)} failed page(s): {failures}")
+    else:
+        print("\n✅ All pages parsed successfully.")
+
+    return df
+

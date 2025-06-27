@@ -2,16 +2,20 @@
 # ----- Extraction prompts (slightly different for PDF vs Excel layouts) -----
 
 EXTRACTOR_PROMPT_PDF = """
-You are an expert rent‑roll extractor for PDFs. Given the following page text,
-return **ALL** units and charges in strict JSON array format:
+You are an expert rent-roll extractor for PDFs. Given the following page text,
+return **ALL** units and their attributes in strict JSON array format:
 [
   {
-    "unit": "A1",
-    "market_rent": "1500",
-    "current_rent": "1400",
-    "tenant": "John Smith",
-    "charges": [{"type": "Monthly", "amount": "1400"}, ...],
-    "move_in": "2023‑01‑01"
+    "Unit Code": "A1",
+    "Unit Type": "1BR",
+    "Assigned Type": "Residential",
+    "SqFt": 850,
+    "Name": "John Smith",
+    "Status": "Occupied",
+    "Monthly Rent": 1450.00,
+    "Lease Start": "2023-01-01",
+    "Lease End": "2023-12-31",
+    "Move Out": ""
   },
   ...
 ]
@@ -23,10 +27,8 @@ PAGE:
 """
 
 EXTRACTOR_PROMPT_EXCEL = """
-You are an expert rent‑roll extractor for Excel‑style tabular chunks. The
-Excel text below is tab‑delimited. Extract EVERY unit row and its charges,
-returning the **exact** JSON array format described. Do NOT add keys before or
-after the array.
+You are an expert rent-roll extractor for Excel-style tabular chunks. The
+Excel text below is tab-delimited. Extract EVERY unit row, returning the **exact** JSON array format described. Do NOT add keys before or after the array.
 TABLE:
 --------
 {text}
@@ -44,7 +46,7 @@ Extractor output:
 {extracted}
 -----------
 Tasks:
-1. Reject if it says e.g. "...and the rest" or omits units/charges.
+1. Reject if it says e.g. "...and the rest" or omits units.
 2. Confirm JSON syntax is an array.
 3. (Assume hidden schema) Validate against required keys.
 Respond exactly with:

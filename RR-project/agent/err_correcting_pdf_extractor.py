@@ -144,44 +144,68 @@ def extractor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     extracted = extract_units(page_text)
     return {**state, "extracted": extracted}
 
-
+# ───────────────── evaluator_node (robust) ──────────────────
 def evaluator_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Validates JSON syntactically & via schema, then calls LLM evaluator."""
-    page_text = state["page_text"]
-    extracted_raw = state["extracted"]
+    """
+    • Validates the extractor’s raw JSON with three gates:
+        1. syntactic JSON.load
+        2. JSON-schema validation
+        3. semantic/coverage check via LLM evaluator
+    • If ANY check fails ➜ status = "invalid", an 'instructions'
+      string is added, and the retry counter is incremented.
+    """
+    page_text: str = state["page_text"]
+    extracted_raw: str = state["extracted"]
 
-    # ---- 1) try JSON.parse
+    # ---------- default result ----------
+    eval_result: Dict[str, str] = {"status": "invalid",
+                                   "instructions": ""}
+
+    # ---------- 1) JSON syntax ----------
     try:
         extracted_json = json.loads(extracted_raw)
     except Exception as e:
-        return {**state,
-                "eval": {"status": "invalid",
-                         "instructions": f"Output not valid JSON. Error: {e}"}}
+        eval_result["instructions"] = (
+            f"Output is not valid JSON. Error: {e}. "
+            "Return a proper JSON array like [{{}}, {{}}]."
+        )
+    else:
+        # ---------- 2) JSON-Schema ----------
+        try:
+            json_validate(instance=extracted_json, schema=PAGE_SCHEMA)
+        except ValidationError as ve:
+            eval_result["instructions"] = (
+                "JSON does not match required schema: "
+                f"{ve.message}"
+            )
+        else:
+            # ---------- 3) LLM semantic check ----------
+            eval_result = evaluate_output(page_text, extracted_raw)
 
-    # ---- 2) schema validation
-    try:
-        json_validate(instance=extracted_json, schema=PAGE_SCHEMA)
-    except ValidationError as ve:
-        return {**state,
-                "eval": {"status": "invalid",
-                         "instructions": f"JSON schema violation: {ve.message}"}}
+    # ---------- update state & retries ----------
+    new_state = {**state, "eval": eval_result}
 
-    # ---- 3) content & “...and the rest” check via LLM evaluator
-    eval_llm = evaluate_output(page_text, extracted_raw)
-    return {**state, "eval": eval_llm}
+    if eval_result.get("status") == "invalid":
+        new_state["instructions"] = eval_result.get("instructions", "")
+        new_state["retries"] = state.get("retries", 0) + 1
+
+    return new_state
+# ─────────────────────────────────────────────────────────────
+
 
 MAX_RETRIES = 3
 
 def router(state):
+    retries = state.get("retries", 0)
+
     if state["eval"]["status"] == "valid":
         return "end"
-    elif state.get("retries", 0) >= MAX_RETRIES:
+    elif retries >= MAX_RETRIES:
         print("⚠️ Max retries reached. Returning best-effort result.")
         return "end"
     else:
-        state["retries"] += 1
-        state["instructions"] = state["eval"].get("instructions", "")
         return "extractor"
+
 
 
 

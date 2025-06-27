@@ -18,6 +18,7 @@ from jsonschema import validate as json_validate, ValidationError
 # ---------- LangChain / LangGraph ----------
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, END   #  ← NOTE: use the constant END
 
 # -------------------------------------------------------------------------
 # 0.  LLM clients
@@ -192,37 +193,35 @@ def evaluator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     return new_state
 # ─────────────────────────────────────────────────────────────
 
-
 MAX_RETRIES = 3
 
 def router(state):
     retries = state.get("retries", 0)
-
     if state["eval"]["status"] == "valid":
-        return "end"
+        return END                         # ① finish successfully
     elif retries >= MAX_RETRIES:
-        print("⚠️ Max retries reached. Returning best-effort result.")
-        return "end"
+        print("⚠️ Max retries reached.")
+        return END                         # ② finish after too many tries
     else:
-        return "extractor"
-
+        return "extractor"                 # ③ loop back
 
 
 
 # -------------------------------------------------------------------------
 # 5. Build LangGraph workflow
 # -------------------------------------------------------------------------
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, Dict
 
-class RentRollState(TypedDict):
+# Step 1: TypedDict for state
+class RentRollState(TypedDict, total=False):
     page_text: str
-    extracted: Optional[str]
-    eval: Optional[Dict[str, str]]
+    extracted: str
+    eval: Dict[str, str]
     instructions: Optional[str]
+    retries: int
 
+# Step 2: Build graph using schema
 graph = StateGraph(state_schema=RentRollState)
-
-
 
 graph.add_node("extractor", extractor_node)
 graph.add_node("evaluator", evaluator_node)
@@ -230,9 +229,10 @@ graph.add_node("evaluator", evaluator_node)
 graph.set_entry_point("extractor")
 graph.add_edge("extractor", "evaluator")
 graph.add_conditional_edges("evaluator", router)
-graph.set_finish_point("end")
+graph.set_finish_point(END)
 
 workflow = graph.compile()
+
 
 # -------------------------------------------------------------------------
 # 6. PDF helper & run

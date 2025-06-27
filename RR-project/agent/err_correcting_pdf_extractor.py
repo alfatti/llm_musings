@@ -178,7 +178,18 @@ def router(state: Dict[str, Any]) -> str:
 # -------------------------------------------------------------------------
 # 5. Build LangGraph workflow
 # -------------------------------------------------------------------------
-graph = StateGraph()
+from typing import TypedDict, Optional
+
+class RentRollState(TypedDict):
+    page_text: str
+    extracted: Optional[str]
+    eval: Optional[Dict[str, str]]
+    instructions: Optional[str]
+
+graph = StateGraph(state_schema=RentRollState)
+
+
+
 graph.add_node("extractor", extractor_node)
 graph.add_node("evaluator", evaluator_node)
 

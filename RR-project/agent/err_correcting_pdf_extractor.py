@@ -12,6 +12,7 @@ from typing import Dict, Any, List
 
 import pandas as pd
 from pypdf import PdfReader
+import pdfplumber
 from jsonschema import validate as json_validate, ValidationError
 
 # ---------- LangChain / LangGraph ----------
@@ -212,9 +213,17 @@ workflow = graph.compile()
 # -------------------------------------------------------------------------
 # 6. PDF helper & run
 # -------------------------------------------------------------------------
-def pdf_to_pages(path: str) -> List[str]:
-    reader = PdfReader(path)
-    return [page.extract_text() for page in reader.pages]
+# def pdf_to_pages(path: str) -> List[str]:
+#     reader = PdfReader(path)
+#     return [page.extract_text() for page in reader.pages]
+
+def pdf_to_pages(path: str) -> list[str]:
+    pages = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(layout=True)  # Preserves spacing
+            pages.append(text)
+    return pages
 
 
 def process_pdf(path: str) -> pd.DataFrame:

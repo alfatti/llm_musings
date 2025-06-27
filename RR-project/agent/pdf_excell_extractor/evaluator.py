@@ -8,31 +8,29 @@ from prompts import EVALUATOR_PROMPT
 UNIT_SCHEMA = {
     "type": "object",
     "properties": {
-        "unit": {"type": "string"},
-        "market_rent": {"type": ["string", "number"]},
-        "current_rent": {"type": ["string", "number"]},
-        "tenant": {"type": "string"},
-        "charges": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string"},
-                    "amount": {"type": ["string", "number"]},
-                },
-                "required": ["type", "amount"],
-            },
-        },
-        "move_in": {"type": "string"},
+        "Unit Code": {"type": "string"},
+        "Unit Type": {"type": "string"},
+        "Assigned Type": {"type": "string"},
+        "SqFt": {"type": ["number", "string"]},
+        "Name": {"type": "string"},
+        "Status": {"type": "string"},
+        "Monthly Rent": {"type": ["number", "string"]},
+        "Lease Start": {"type": "string"},
+        "Lease End": {"type": "string"},
+        "Move Out": {"type": "string"},
     },
     "required": [
-        "unit",
-        "market_rent",
-        "current_rent",
-        "tenant",
-        "charges",
-        "move_in",
-    ],
+        "Unit Code",
+        "Unit Type",
+        "Assigned Type",
+        "SqFt",
+        "Name",
+        "Status",
+        "Monthly Rent",
+        "Lease Start",
+        "Lease End",
+        "Move Out"
+    ]
 }
 PAGE_SCHEMA = {"type": "array", "items": UNIT_SCHEMA}
 

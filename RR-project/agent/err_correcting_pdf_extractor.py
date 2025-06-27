@@ -169,10 +169,19 @@ def evaluator_node(state: Dict[str, Any]) -> Dict[str, Any]:
     eval_llm = evaluate_output(page_text, extracted_raw)
     return {**state, "eval": eval_llm}
 
+MAX_RETRIES = 3
 
-def router(state: Dict[str, Any]) -> str:
-    """LangGraph routing: loop if invalid, else finish."""
-    return "end" if state["eval"]["status"] == "valid" else "extractor"
+def router(state):
+    if state["eval"]["status"] == "valid":
+        return "end"
+    elif state.get("retries", 0) >= MAX_RETRIES:
+        print("⚠️ Max retries reached. Returning best-effort result.")
+        return "end"
+    else:
+        state["retries"] += 1
+        state["instructions"] = state["eval"].get("instructions", "")
+        return "extractor"
+
 
 
 # -------------------------------------------------------------------------
@@ -211,7 +220,11 @@ def pdf_to_pages(path: str) -> List[str]:
 def process_pdf(path: str) -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
     for i, page_text in enumerate(pdf_to_pages(path), start=1):
-        state = {"page_text": page_text}
+        state = {
+            "page_text": page_text,   # mandatory input for extractor
+            "retries": 0,             # NEW: retry counter
+            # "instructions": ""      # optional; only filled by evaluator
+        }
         final = workflow.invoke(state)
         extracted_json = json.loads(final["extracted"])
         # attach page number for traceability

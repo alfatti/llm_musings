@@ -97,8 +97,9 @@ UNIT_SCHEMA = {
 PAGE_SCHEMA = {"type": "array", "items": UNIT_SCHEMA}
 
 # --------------------------------------------
-# Cell 4: LangGraph State and Node Definitions
+# Cell 4 : LangGraph state + node definitions
 # --------------------------------------------
+from typing import TypedDict, List, Union, Optional
 
 class AgentState(TypedDict):
     page_text: str
@@ -106,13 +107,26 @@ class AgentState(TypedDict):
     result: Optional[str]
     is_valid: bool
     attempts: int
+    errors: List[str]          # ⬅️ verbose failure log
 
+MAX_TRIES = 3                 # central place to change retry cap
+
+
+# ── Extractor -----------------------------------------------------------
 def extractor_node(state: AgentState) -> AgentState:
     text = state["page_text"]
-    instructions = state["history"][-1].content if state["history"] else EXTRACTOR_PROMPT.format(text=text)
-    prompt = instructions if "Please fix:" in instructions else EXTRACTOR_PROMPT.format(text=text)
+
+    # if evaluator appended “Please fix:” we reuse that message verbatim,
+    # otherwise start with the normal extractor prompt:
+    fix_msg = next(
+        (m for m in reversed(state["history"]) if isinstance(m, HumanMessage) and m.content.startswith("Please fix:")),
+        None,
+    )
+    prompt = fix_msg.content if fix_msg else EXTRACTOR_PROMPT.format(text=text)
+
     messages = state["history"] + [HumanMessage(content=prompt)]
     response = llm.invoke(messages)
+
     return {
         **state,
         "history": messages + [response],
@@ -120,29 +134,47 @@ def extractor_node(state: AgentState) -> AgentState:
         "attempts": state["attempts"] + 1,
     }
 
+
+# ── Evaluator -----------------------------------------------------------
 def evaluator_node(state: AgentState) -> AgentState:
-    text = state["page_text"]
-    result = state["result"]
+    text   = state["page_text"]
+    output = state["result"]
+    errors = []                       # collect granular reasons
 
-    # Quick string check
-    if "and the rest" in result.lower():
-        state["history"].append(HumanMessage(content="Please fix: output was truncated. List all units explicitly."))
-        return {**state, "is_valid": False}
+    # 1. quick truncation check
+    if "and the rest" in output.lower():
+        errors.append("Output truncates units with a phrase like 'and the rest…'.")
 
+    # 2. JSON parsing
+    parsed = None
     try:
-        parsed = json.loads(result)
+        parsed = json.loads(output)
     except Exception as e:
-        state["history"].append(HumanMessage(content=f"Please fix: Output is not valid JSON. Error: {e}"))
-        return {**state, "is_valid": False}
+        errors.append(f"Not valid JSON – {e}")
 
-    # JSON Schema Validation
-    try:
-        json_validate(instance=parsed, schema=PAGE_SCHEMA)
-    except ValidationError as e:
-        state["history"].append(HumanMessage(content=f"Please fix: JSON does not match required schema. Error: {e.message}"))
-        return {**state, "is_valid": False}
+    # 3. schema validation
+    if parsed is not None:
+        try:
+            json_validate(instance=parsed, schema=PAGE_SCHEMA)
+        except ValidationError as e:
+            errors.append(f"Schema violation – {e.message}")
 
-    return {**state, "is_valid": True}
+    # 4. cross-check *approx* unit count
+    if parsed is not None:
+        unit_lines = [ln for ln in text.splitlines() if re.match(r"^\s*\w{1,10}\s", ln)]
+        if len(parsed) < len(unit_lines):
+            errors.append(
+                f"Only {len(parsed)} units returned, but ~{len(unit_lines)} detected on page."
+            )
+
+    # ---- build state & feedback
+    if errors:            # INVALID
+        feedback = "Please fix:\n" + "\n".join(f"- {e}" for e in errors)
+        state["history"].append(HumanMessage(content=feedback))
+        return {**state, "is_valid": False, "errors": state["errors"] + [f"Attempt {state['attempts']}: " + '; '.join(errors)]}
+
+    # VALID
+    return {**state, "is_valid": True, "errors": state["errors"]}
 
 # --------------------------------------------
 # Cell 5: Build LangGraph
@@ -161,62 +193,92 @@ workflow.add_conditional_edges(
 graph = workflow.compile()
 
 # ==========================================================
-# Cell 8  : Utility – run the LangGraph agent on one page
+# Cell 8 : Run agent on a single page, record detail
 # ==========================================================
 def run_agent_on_page(page_text: str) -> dict:
-    """Invoke the extractor-evaluator graph on a single page of text
-       and return a dict with page-level metadata + parsed JSON."""
-    init_state = {
+    """
+    Returns a dict with:
+      • 'valid'     True/False
+      • 'attempts'  int
+      • 'raw_json'  str  (Gemini’s final answer, valid or not)
+      • 'parsed'    list | None
+      • 'errors'    list[str]   verbose log per iteration
+    """
+    init = {
         "page_text": page_text,
         "history": [],
         "result": None,
         "is_valid": False,
         "attempts": 0,
+        "errors": [],
     }
-    final = graph.invoke(init_state)
-    out = {
-        "is_valid": final["is_valid"],
-        "attempts": final["attempts"],
-        "raw_json": final["result"],
-    }
-    try:
-        out["parsed"] = json.loads(final["result"]) if final["is_valid"] else None
-    except Exception:
-        out["parsed"] = None
-    return out
-# ==========================================================
-# Cell 9  : Process an entire PDF with pdfplumber
-# ==========================================================
-import pdfplumber
-from pathlib import Path
-import pandas as pd
+    final = graph.invoke(init)
 
-def extract_rentroll_pdf(pdf_path: str | Path) -> pd.DataFrame:
+    # After MAX_TRIES, evaluator may still mark invalid; we keep raw result anyway
+    raw = final["result"]
+    parsed = None
+    try:
+        parsed = json.loads(raw) if final["is_valid"] else None
+    except Exception:
+        pass
+
+    return {
+        "valid": final["is_valid"],
+        "attempts": final["attempts"],
+        "raw_json": raw,
+        "parsed": parsed,
+        "errors": final["errors"],
+    }
+
+# ==========================================================
+# Cell 9 : Process entire PDF and collect BOTH raw + DataFrame
+# ==========================================================
+def extract_rentroll_pdf(pdf_path: str | Path):
     """
-    • Opens the PDF
-    • Runs the agent per page
-    • Concatenates all successfully-parsed units into a single DataFrame
+    Returns (json_pages, dataframe)
+      • json_pages : list[str]  – raw extractor output for each page
+      • dataframe  : pd.DataFrame of all successfully-parsed units
+    Also prints per-page status with verbose evaluator logs.
     """
-    records: list[dict] = []
-    failures: list[int] = []
+    json_pages: list[str] = []
+    records:    list[dict] = []
 
     with pdfplumber.open(pdf_path) as pdf:
         for idx, page in enumerate(pdf.pages, start=1):
+            print(f"\n=== Page {idx} ===")
             text = page.extract_text() or ""
-            result = run_agent_on_page(text)
-            if result["parsed"]:
-                for unit in result["parsed"]:
-                    unit["_page"] = idx          # keep page reference
+            res  = run_agent_on_page(text)
+
+            # keep raw JSON for user inspection
+            json_pages.append(res["raw_json"])
+
+            if res["valid"]:
+                print(f"✅ Parsed after {res['attempts']} attempt(s). "
+                      f"Units extracted: {len(res['parsed'])}")
+                for unit in res["parsed"]:
+                    unit["_page"] = idx
                     records.append(unit)
             else:
-                failures.append(idx)
-                print(f"⚠️  Page {idx} failed after {result['attempts']} attempts.")
+                print(f"❌ Still invalid after {MAX_TRIES} attempts.")
+                for err in res["errors"]:
+                    print("  •", err)
 
     df = pd.DataFrame(records)
-    if failures:
-        print(f"\nFinished with {len(failures)} failed page(s): {failures}")
-    else:
-        print("\n✅ All pages parsed successfully.")
+    return json_pages, df
+# ==========================================================
+# Cell 10 : Run end-to-end
+# ==========================================================
+pdf_file = "my_rentroll.pdf"          # 🔄 put your file here
 
-    return df
+raw_json_list, rentroll_df = extract_rentroll_pdf(pdf_file)
+
+# ---- show DataFrame --------------------------------------
+from IPython.display import display, JSON
+display(rentroll_df.head())
+print(f"\nRows in DataFrame: {len(rentroll_df)}")
+
+# ---- keep raw JSONs handy --------------------------------
+print("\n🔎 raw_json_list[0]  (first page excerpt):")
+JSON(json.loads(raw_json_list[0][:1000]))              # pretty print first 1 kB
+
 

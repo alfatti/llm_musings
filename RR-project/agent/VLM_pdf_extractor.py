@@ -150,3 +150,35 @@ def extract_markdown_tables_with_langchain(image_path: str) -> list[pd.DataFrame
     dfs = [pd.read_html(str(t))[0] for t in tables]
     return dfs
 
+#===============================
+#minimal
+#===============================
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+import base64, pandas as pd, markdown, bs4
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash-preview-04-17",   # later: "gemini-2.5-flash"
+    temperature=0
+)
+
+def encode_png(path):                 # inline base-64
+    return base64.b64encode(open(path, "rb").read()).decode()
+
+def markdown_tables_from_image(img_path: str) -> list[pd.DataFrame]:
+    img_b64 = encode_png(img_path)
+    prompt_parts = [
+        {"type":"text", "text":
+         "This is a rent-roll page. Convert **every table** to Markdown. "
+         "Include headers and all rows, even if blank."},
+        {"type":"image_url", "image_url":{"url":f"data:image/png;base64,{img_b64}"}}
+    ]
+
+    md_response = llm.invoke([HumanMessage(content=prompt_parts)]).content
+
+    # --- Markdown → DataFrames ---
+    html = markdown.markdown(md_response, extensions=["tables"])
+    soup = bs4.BeautifulSoup(html, "html.parser")
+    return [pd.read_html(str(t))[0] for t in soup.find_all("table")]
+
+

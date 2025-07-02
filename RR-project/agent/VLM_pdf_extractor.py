@@ -1,4 +1,5 @@
-#!pip install pandas markdown beautifulsoup4 markdownify matplotlib
+#!pip install protobuf==4.25.3 google-generativeai==0.5.2 langchain-google-genai==1.0.1 langchain==0.1.19 pandas markdown beautifulsoup4 pdf2image matplotlib
+
 
 from pdf2image import convert_from_path
 from pathlib import Path

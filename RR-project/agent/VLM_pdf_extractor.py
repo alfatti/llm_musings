@@ -101,3 +101,51 @@ def process_rent_roll_pages(image_paths):
         dfs = markdown_to_dataframes(markdown)
         all_dataframes.extend(dfs)
     return all_dataframes
+
+
+#===================================================
+#langchain
+#===================================================
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+import base64
+import pandas as pd
+import markdown
+from bs4 import BeautifulSoup
+
+# LangChain LLM Client
+llm = ChatGoogleGenerativeAI(model="gemini-pro-vision", temperature=0)
+
+# Helper: Convert PNG image to inline base64 content
+def encode_image_base64(image_path: str):
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+# LangChain-compatible function
+def extract_markdown_tables_with_langchain(image_path: str) -> list[pd.DataFrame]:
+    prompt = (
+        "This is a rent roll page. Extract all tabular data as Markdown tables. "
+        "Include headers, monetary amounts, and every row, even if some cells are blank. "
+        "Do not summarize or skip details."
+    )
+
+    # Encode the image for Gemini Vision
+    image_base64 = encode_image_base64(image_path)
+    image_data = {
+        "mime_type": "image/png",
+        "data": image_base64
+    }
+
+    # Send the image + prompt to Gemini Vision via LangChain
+    response = llm.invoke([HumanMessage(content=[{"type": "text", "text": prompt},
+                                                  {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}])])
+
+    markdown_text = response.content
+
+    # Convert markdown to DataFrames
+    html = markdown.markdown(markdown_text, extensions=["markdown.extensions.tables"])
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table")
+    dfs = [pd.read_html(str(t))[0] for t in tables]
+    return dfs
+

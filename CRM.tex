@@ -1,0 +1,139 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{amsmath, amssymb, graphicx, hyperref}
+\usepackage{enumitem}
+\setlist{nosep}
+
+\title{Offline Learning from Historical Interaction Logs}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Abstract}
+This report explores how machine learning systems can learn improved decision policies from logged interaction data, without costly or risky online experimentation. Using techniques from causal inference and counterfactual estimation, such as inverse propensity scoring (IPS), we can safely evaluate and optimize new policies offline. Applications include contextual bandits, learning to rank, and fairness-aware learning.
+
+\section{Motivation}
+
+Modern ML systems such as recommender engines, search engines, and voice assistants do not just make predictions---they take actions. These actions influence real-world user experience and are increasingly consequential.
+
+These systems generate vast \textbf{interaction logs}, which contain tuples of context, actions taken, and observed outcomes. Our goal is to learn new policies from these logs without deploying them live. This leads to the problem of \textbf{Batch Learning from Bandit Feedback (BLBF)}.
+
+\section{Problem Setup}
+
+Each log entry is a tuple $(x, a, r, p(a|x))$ where:
+\begin{itemize}
+  \item $x$ = context (e.g. user features),
+  \item $a$ = action taken by policy $\pi_0$,
+  \item $r$ = observed reward,
+  \item $p(a|x)$ = probability under the logging policy $\pi_0$.
+\end{itemize}
+
+The objective is to evaluate or learn a new policy $\pi$ that ideally achieves higher expected reward.
+
+\subsection*{Challenge}
+We only observe rewards for actions taken by $\pi_0$. For other actions, rewards are \textbf{missing}. This is a form of selection bias.
+
+\section{Approaches}
+
+\subsection{1. Reward Prediction (Supervised Regression)}
+
+Train a model $\hat{r}(x, a)$ using observed pairs to impute missing rewards. Then compute expected utility for any $\pi$ using $\hat{r}(x, a)$.
+
+\textbf{Drawbacks:}
+\begin{itemize}
+  \item Sensitive to extrapolation.
+  \item Difficult to assess bias.
+\end{itemize}
+
+\subsection{2. Direct Utility Estimation via IPS}
+
+Use \textbf{Inverse Propensity Scoring (IPS)}:
+\[
+\hat{U}(\pi) = \frac{1}{N} \sum_{i=1}^N \frac{\pi(a_i|x_i)}{\pi_0(a_i|x_i)} r_i
+\]
+\begin{itemize}
+  \item Requires $\pi_0(a_i|x_i) > 0$ (full support).
+  \item Unbiased estimator of expected reward.
+\end{itemize}
+
+\subsection*{Variance and Overfitting}
+Far policies from $\pi_0$ have high variance in IPS due to large importance weights. Hence, learning from IPS must regularize both:
+\begin{itemize}
+  \item \textbf{Model complexity} (capacity),
+  \item \textbf{Distance to logging policy} (variance control).
+\end{itemize}
+
+\section{Counterfactual Risk Minimization (CRM)}
+
+\textbf{Learning Objective:}
+\[
+\mathcal{L}(\pi) = -\text{IPS}(\pi) + \lambda_1 \cdot \text{Var}(\pi) + \lambda_2 \cdot \text{Reg}(\pi)
+\]
+\begin{itemize}
+  \item Balances accuracy, variance, and complexity.
+  \item Analogous to structural risk minimization.
+\end{itemize}
+
+\section{Algorithms}
+
+\subsection{POEM: Policy Optimizer for Exponential Models}
+\begin{itemize}
+  \item Policy class: softmax over features $\phi(x,a)$:
+  \[
+  \pi_\theta(a|x) = \frac{\exp(\theta^\top \phi(x,a))}{\sum_{a'} \exp(\theta^\top \phi(x,a'))}
+  \]
+  \item Optimized via gradient descent with regularization.
+  \item Empirically shown to converge to optimal performance with enough logged data.
+\end{itemize}
+
+\subsection{BanditNet: Deep Counterfactual Learning}
+\begin{itemize}
+  \item Replaces softmax over linear features with softmax over neural network outputs.
+  \item Regularization needed to avoid \textit{propensity overfitting}.
+  \item Uses self-normalized IPS estimator for robustness.
+\end{itemize}
+
+\section{Learning to Rank from Click Logs}
+
+\subsection*{Challenge}
+Rankings are combinatorial actions. We only observe clicks (partial labels) and not full relevance information.
+
+\subsection*{Solution}
+Use \textbf{position-based model} for visibility: $q_k$ = probability user observes position $k$.
+
+\textbf{IPS for Ranking:}
+\[
+\text{Click at position } k \Rightarrow \text{weight} = \frac{1}{q_k}
+\]
+
+\subsection*{Result}
+With enough clicks, propensity-weighted learning to rank converges to optimal. Ignoring $q_k$ leads to bias that no amount of data can fix.
+
+\section{Fairness and Other Objectives}
+\begin{itemize}
+  \item IPS approach generalizes to optimizing fairness, diversity, or other policy constraints.
+  \item Allows flexible design of ML systems with multiple stakeholders.
+\end{itemize}
+
+\section{Summary}
+
+\textbf{Key Points:}
+\begin{itemize}
+  \item Offline policy learning is essential for safe, scalable ML deployment.
+  \item Direct utility estimation via IPS enables unbiased evaluation.
+  \item Counterfactual risk minimization supports robust learning.
+  \item Works for contextual bandits, ranking, and fairness-aware ML.
+\end{itemize}
+
+\section{Further Reading}
+
+\begin{itemize}
+  \item Swaminathan \& Joachims (2015), \textit{Counterfactual Risk Minimization}
+  \item Joachims et al. (2018), \textit{Deep Counterfactual Learning}
+  \item Schnabel et al. (2016), \textit{Recommendations as Treatments}
+  \item Jiang \& Li (2016), \textit{Doubly Robust Estimation}
+\end{itemize}
+
+\end{document}

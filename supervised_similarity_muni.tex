@@ -1,99 +1,120 @@
 \documentclass{article}
-\usepackage{amsmath}
-\usepackage{hyperref}
-\title{Technical Summary: Supervised Similarity for Municipal Bonds}
-\author{}
-\date{}
-
+\usepackage{amsmath,amsfonts}
+\usepackage{enumitem}
 \begin{document}
-\maketitle
 
-\section*{1. Objective}
-Develop a supervised similarity metric for municipal bonds to support relative valuation—i.e., identify cohorts of bonds with similar risk profiles—using CatBoost and evaluate via yield/OAS regression and back-tests. :contentReference[oaicite:0]{index=0}
+\section*{Technical Summary: Machine Learning-based Relative Valuation of Municipal Bonds \\ \small{(arXiv:2408.02273)}}
 
-\section*{2. Methodology}
+\subsection*{Objective}
+Develop a supervised learning framework to model bond similarity and identify relative value opportunities in the municipal bond market by comparing a bond to its most similar peers, instead of relying on heuristic or rule-based cohorts.
 
-\subsection*{2.1 CatBoost as Multi‑Output Regressor}
-\begin{itemize}
-  \item Train a CatBoost model $f: X\to(\hat y,\hat\text{OAS})$ using multiple outputs, minimizing 
-  \[
-  \text{MultiRMSE} = \sqrt{\frac{1}{N \cdot T} \sum_{i=1}^N \sum_{t=1}^T w_i (\hat z_{it} - z_{it})^2},
-  \]
-  where $T=2$ (yield, OAS), $w_i$ sample weights, $N$ instances :contentReference[oaicite:1]{index=1}.
-  \item Hyper‐parameters (trees, depth, learning rate, etc.) tuned via Optuna/Bayesian CV :contentReference[oaicite:2]{index=2}.
+\subsection*{Modeling Framework: Multi-output CatBoost Regression}
+
+\paragraph{Inputs:}
+Each bond is represented by a feature vector \( x_i \in \mathbb{R}^d \), consisting of:
+\begin{itemize}[nosep]
+    \item Categorical features (e.g., state, sector, tax status, rating)
+    \item Numerical features (e.g., maturity, duration, coupon rate, OAS)
 \end{itemize}
 
-\subsection*{2.2 Proximity-based Similarity}
-\paragraph{For Random Forests (RF):}  
-\[
-\text{prox}_{ij} = \frac{1}{M} \sum_{m=1}^M \mathbf{1}\{L_m(i)=L_m(j)\},
-\]  
-with $M$ trees, and $L_m(i)$ leaf index of sample $i$ in tree $m$. :contentReference[oaicite:3]{index=3}
+\paragraph{Outputs:}
+\begin{itemize}[nosep]
+    \item Targets: Options-Adjusted Spread (OAS) and yield (\( y_i \in \mathbb{R}^2 \))
+    \item Supervised regression using CatBoost for multi-output prediction
+\end{itemize}
 
-\paragraph{For CatBoost/GBDT:}  
-Weighted across trees by change in residual loss:
+\paragraph{Loss Function:}
+CatBoost minimizes a multi-output RMSE loss:
 \[
-\text{prox}_{ij} = \sum_{m=1}^M \omega_m \, \mathbf{1}\{L_m(i)=L_m(j)\}, \quad 
-\omega_m \propto \Delta \text{error}_m = E_{m-1} - E_{m}
+\mathcal{L} = \sqrt{\frac{1}{nD} \sum_{i=1}^n \sum_{d=1}^D (y_{id} - \hat{y}_{id})^2}
 \]
-where $E_m$ is MultiRMSE after $m$ trees. :contentReference[oaicite:4]{index=4}
+where \( D=2 \) (OAS and yield), \( n \) is the number of training bonds.
 
-\subsection*{2.3 Relative‑Value Ranking}
-For each bond \(b\):
-\begin{enumerate}
-  \item Define \emph{generic group} by state & maturity bucket (0–10 yr, 10–15, 15+). :contentReference[oaicite:5]{index=5}
-  \item Find $k$ nearest neighbors by CatBoost proximity.
-  \item Compute relative yield:
-  \[
-    \text{RV}_b = y_b - \text{median}(\{y_{b'}: b' \in \text{neighbors}\})
-  \]
-  \item Rank bonds descending by RV (higher undervaluation = higher rank).
-  \item Alternative benchmarks: ranking by raw yield; ranking by Duration × Spread (DxS) rule-based nearest neighbors. :contentReference[oaicite:6]{index=6}
+\subsection*{Similarity via Residual-weighted Tree Path Co-location}
+To estimate similarity between two bonds \( i \) and \( j \), the model uses the tree path similarity from CatBoost:
+
+\[
+S_{ij} = \sum_{t=1}^T w_t \cdot \mathbf{1}\left(L_i^t = L_j^t\right)
+\]
+where:
+\begin{itemize}[nosep]
+    \item \( T \): total number of trees in the model
+    \item \( L_i^t \): leaf index of bond \( i \) in tree \( t \)
+    \item \( w_t \propto \Delta E_t = E_{t-1} - E_t \): weight proportional to reduction in loss when adding tree \( t \)
+\end{itemize}
+
+This favors trees that contribute most to model performance, assigning higher importance to early, more predictive trees.
+
+\subsection*{Relative Value Estimation via Peer Comparison}
+\begin{enumerate}[nosep]
+    \item Construct a similarity matrix \( S \in \mathbb{R}^{n \times n} \) using CatBoost path similarity.
+    \item For each bond \( i \), select its top-\( K \) nearest neighbors \( \mathcal{N}(i) \) based on similarity scores \( S_{ij} \).
+    \item Define relative value:
+    \[
+    \text{RV}_i = y_i - \operatorname{median} \{ y_j \,|\, j \in \mathcal{N}(i) \}
+    \]
+    \item Bonds with high positive RV are considered overvalued relative to their peers, and vice versa.
 \end{enumerate}
 
-\subsection*{2.4 Back‑testing Protocol}
-\begin{itemize}
-  \item Six-month back-tests over five non-overlapping periods (mid-2019 to early-2024).
-  \item At each period start \(t\): select all bonds traded in first month → initial ranking via each method.
-  \item Evaluate after 1, 2, 3 months by comparing which initial-top bonds remain in top 3 by relative yield change.
-  \item Metrics:
-  \[
-   P_1 = \frac{\#\{\text{groups where rank-1 at }t\in\text{top3 at }t+\Delta\}}{\text{#groups}},
-  \]
-  \[
-   P_2 = \frac{\#\{\text{groups where top-return bond at }t+\Delta\in \text{top3 at }t\}}{\text{#groups}},
-  \]
-  and combined metric \( (P_1+P_2)/2 \). :contentReference[oaicite:7]{index=7}
+\subsection*{Benchmarks}
+\begin{itemize}[nosep]
+    \item \textbf{Yield-only Ranking:} Rank bonds purely by raw yield.
+    \item \textbf{DxS Rule-based:} Duration \(\times\) Spread, used to form fixed cohorts with similar durations and spreads.
 \end{itemize}
 
-\section*{3. Data}
-\begin{itemize}
-  \item ~1M muni bonds; filtered by credit, size, coupon to a subset (~10s–100s k per snapshot).
-  \item 22 features: 11 numeric (e.g., days-to-maturity, coupon), 11 categorical (e.g. state, rating, tax status, sector). Winsorized yields/OAS. :contentReference[oaicite:8]{index=8}
-  \item Training: Oct 25–Nov 1 2023; back-test periods: six 6‑month slices spanning 2019–2024. :contentReference[oaicite:9]{index=9}
+\subsection*{Back-testing Methodology}
+
+\paragraph{Setup:}
+\begin{itemize}[nosep]
+    \item 5 rolling windows (6-month periods) across 2019–2024.
+    \item Within each window:
+        \begin{itemize}[nosep]
+            \item Form similarity cohorts on month 1.
+            \item Predict relative value ranking.
+            \item Track actual bond performance (yield change) at months 2, 3, and 4.
+        \end{itemize}
 \end{itemize}
 
-\section*{4. Results}
-\begin{itemize}
-  \item CatBoost significantly outperforms Elastic Net, single-output decision tree and RF in test RMSE/MAE on yield/OAS. :contentReference[oaicite:10]{index=10}
-  \item SHAP analysis shows key drivers: state, rating, maturity, coupon, sector. :contentReference[oaicite:11]{index=11}
-  \item In back-tests, similarity-based ranking yields higher median top‑bond returns in most periods (5/6), often with lower volatility. Competitors (yield‐only, DxS) under‐perform or show higher variance. :contentReference[oaicite:12]{index=12}
-\end{itemize}
+\paragraph{Evaluation Metrics:}
 
-\section*{5. Formulas (for Bond Similarity Estimation)}
+For each time window and generic group (e.g., CA 10–15yr), compute:
 
 \begin{align*}
-\text{MultiRMSE} &= \sqrt{\frac{1}{N\,T} \sum_{i=1}^N \sum_{t=1}^T w_i (\hat z_{it} - z_{it})^2}\\
-\text{prox}_{ij} &= \sum_{m=1}^M \omega_m \mathbf{1}[L_m(i) = L_m(j)], \; \omega_m\propto E_{m-1}-E_{m}\\
-\text{RV}_b &= y_b - \mathrm{median}\{y_{b'}\}_{b'\in N_k(b)}
+    P_1 &= \mathbb{P}(\text{Top-ranked bond is among top 3 ex-post performers}) \\
+    P_2 &= \mathbb{P}(\Top ex-post performer was in top 3 recommended bonds)
 \end{align*}
 
-\section*{6. Takeaways}
-\begin{itemize}
-  \item Supervised similarity via CatBoost provides a richer, risk-aware bond distance metric.
-  \item Multi-output regression captures joint yield–OAS structure.
-  \item Proximity-weighted leaf co-occurrence encodes model confidence in similarity.
-  \item In sparse, illiquid muni market, this method outperforms simpler heuristics both in accuracy and back-test robustness.
+Then average performance:
+\[
+\text{Score} = \frac{P_1 + P_2}{2}
+\]
+
+\paragraph{Stability Metrics:}
+Standard deviation of performance metrics across time periods and peer group sizes (\( K \in \{5, 10, 50, 100\} \)).
+
+\subsection*{Ablation and Feature Insight}
+
+\paragraph{SHAP Analysis:}
+Model interpretability reveals most important features driving yield prediction and peer similarity:
+\begin{itemize}[nosep]
+    \item State, rating, OAS, coupon rate, duration, maturity.
+    \item State–sector–rating interactions are implicitly learned via gradient-boosted trees.
 \end{itemize}
+
+\paragraph{Baseline Comparisons:}
+CatBoost multi-output model outperforms:
+\begin{itemize}[nosep]
+    \item ElasticNet linear regression
+    \item Single-output Decision Trees
+    \item Random Forests
+\end{itemize}
+in terms of both accuracy and downstream bond ranking stability.
+
+\subsection*{Takeaways for Bond Similarity Estimation}
+\begin{enumerate}[nosep]
+    \item Supervised similarity captures latent price drivers via tree path structure.
+    \item Learned similarity is more robust than rule-based cohort definitions.
+    \item Back-tests confirm stability and alpha potential across market regimes.
+\end{enumerate}
 
 \end{document}

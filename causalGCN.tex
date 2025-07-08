@@ -1,0 +1,85 @@
+\documentclass{article}
+\usepackage{amsmath,amsfonts}
+\usepackage[margin=1in]{geometry}
+
+\begin{document}
+
+\section*{Methodology: Causal Graph Convolution (``CANAL'') for Dynamic Bond Recommendation}
+
+\subsection*{Problem Setting}
+
+Let $(u,i,t)$ denote an interaction where client\footnote{In this context a ``user’’ is an institutional client and an ``item’’ is a tradable corporate bond.} 
+$u\in\mathcal U$ shows interest in bond $i\in\mathcal I$ on business-day $t\in\mathbb Z_{\ge 0}$.  
+Daily interactions form a sequence of bipartite graphs
+$
+\{\,G_t=(V_t,E_t)\}_{t=1}^{T},\quad 
+V_t=\mathcal U_t\cup\mathcal I_t,\;
+E_t=\{(u,i)\mid(u,i,t)\text{ observed}\}.
+$
+The objective is to rank \emph{currently live} bonds for each client on day~$t$ using only information strictly prior to~$t$.:contentReference[oaicite:0]{index=0}
+
+\subsection*{Rolling Temporal Window}
+
+To avoid data leakage and to keep recommendations responsive, CANAL constructs for every
+prediction day $t$ a \emph{causal snapshot}
+\[
+G_{t,w}=G\bigl[\,\{(u,i,t')\mid t-w\le t' < t\}\bigr],
+\]
+where $w$ is a sliding-window length (typically $1\!-\!5$ trading days in credit markets).\footnote{A smaller $w$ emphasises immediacy but may sacrifice long-term signals; a larger $w$ risks diluting recent trends.}  
+Only $G_{t,w}$ is exposed to the model when generating rankings for day~$t$.:contentReference[oaicite:1]{index=1}
+
+\subsection*{Message Passing}
+
+CANAL re-uses the LightGCN backbone but replaces the usual static neighbourhood aggregate with a \emph{time-aware causal aggregate}.  
+For $k=1,\dots,L$ layers and each node $v$ (client or bond) we compute
+\[
+h^{(k)}_v(t)=
+    \sum_{(v',\Delta t)\in\mathcal N_{t,w}(v)}
+    c^{(\Delta t)}_{vv'}\;h^{(k-1)}_{v'}(t),
+\quad 
+c^{(\Delta t)}_{vv'}=\frac{1}{\sqrt{|\mathcal N_{t,w}(v)|\,|\mathcal N_{t,w}(v')|}},
+\]
+where $\mathcal N_{t,w}(v)$ lists edges incident to $v$ inside $G_{t,w}$ and
+$\Delta t=t-t'$ records the age of each interaction.  
+The key differences from static LightGCN are:
+
+\begin{itemize}
+    \item \textbf{Time index $t$:} embeddings $e_v(t)$ evolve daily, allowing the same client or bond to carry different representations on different days.
+    \item \textbf{Causal neighbourhood:} future interactions $(t'>t)$ are never accessed, eliminating look-ahead bias.
+    \item \textbf{Rolling window restriction:} only edges newer than $w$ days are considered, so stale preferences decay naturally.
+\end{itemize}:contentReference[oaicite:2]{index=2}
+
+The final embedding for node $v$ on day $t$ is the (LightGCN) layer-wise weighted sum
+$
+e_v(t)=\sum_{k=0}^{L}\alpha_k\,h^{(k)}_v(t),\;
+\alpha_k=\tfrac1{k+1}.
+$
+The predicted relevance score is the dot product
+$
+\hat a_{u i}(t)=e_u(t)^\top e_i(t).
+$
+
+\subsection*{Training Objective}
+
+Daily quadruplets $(t,u,i,j)$ are sampled with
+\(
+(i\! \in\!  E_t,\;j\notin E_t)
+\)
+and optimised using Bayesian Personalised Ranking (BPR):
+\[
+\mathcal L_{\mathrm{BPR}}
+    =-\!\!\!\!\sum_{(t,u,i,j)}\!
+      \log\sigma\!\bigl(\hat a_{u i}(t)-\hat a_{u j}(t)\bigr).
+\]
+Dynamic negative sampling at a $10{:}1$ ratio and Adam optimisation are applied; early stopping is gauged on temporal validation slices.:contentReference[oaicite:3]{index=3}
+
+\subsection*{Why It Matters to Bond Desks}
+
+\begin{itemize}
+    \item \textbf{No look-ahead}: CANAL mimics the trader’s real information set—recommendations never exploit trades that have not yet happened.
+    \item \textbf{Drift control}: the rolling window guards against regime shifts (e.g.\ earnings releases, rating actions) that quickly render older trades irrelevant.
+    \item \textbf{Lightweight}: the model keeps LightGCN’s linear, feature-free layers—training time scales linearly in edges, making daily refresh feasible for thousands of clients and tens of thousands of bonds.
+    \item \textbf{Interpretable signals}: dot-product scores can be decomposed into path contributions, giving hints about which recent peer trades support a recommendation—useful for sales conversation.
+\end{itemize}
+
+\end{document}

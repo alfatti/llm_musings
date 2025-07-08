@@ -11,7 +11,7 @@ Develop a supervised learning framework to model bond similarity and identify re
 \subsection*{Modeling Framework: Multi-output CatBoost Regression}
 
 \paragraph{Inputs:}
-Each bond is represented by a feature vector \( x_i \in \mathbb{R}^d \), consisting of:
+Each bond is represented by a feature vector $x_i \in \mathbb{R}^d$, consisting of:
 \begin{itemize}[nosep]
     \item Categorical features (e.g., state, sector, tax status, rating)
     \item Numerical features (e.g., maturity, duration, coupon rate, OAS)
@@ -19,7 +19,7 @@ Each bond is represented by a feature vector \( x_i \in \mathbb{R}^d \), consist
 
 \paragraph{Outputs:}
 \begin{itemize}[nosep]
-    \item Targets: Options-Adjusted Spread (OAS) and yield (\( y_i \in \mathbb{R}^2 \))
+    \item Targets: Options-Adjusted Spread (OAS) and yield ($y_i \in \mathbb{R}^2$)
     \item Supervised regression using CatBoost for multi-output prediction
 \end{itemize}
 
@@ -28,27 +28,27 @@ CatBoost minimizes a multi-output RMSE loss:
 \[
 \mathcal{L} = \sqrt{\frac{1}{nD} \sum_{i=1}^n \sum_{d=1}^D (y_{id} - \hat{y}_{id})^2}
 \]
-where \( D=2 \) (OAS and yield), \( n \) is the number of training bonds.
+where $D=2$ (OAS and yield), $n$ is the number of training bonds.
 
 \subsection*{Similarity via Residual-weighted Tree Path Co-location}
-To estimate similarity between two bonds \( i \) and \( j \), the model uses the tree path similarity from CatBoost:
+To estimate similarity between two bonds $i$ and $j$, the model uses the tree path similarity from CatBoost:
 
 \[
 S_{ij} = \sum_{t=1}^T w_t \cdot \mathbf{1}\left(L_i^t = L_j^t\right)
 \]
 where:
 \begin{itemize}[nosep]
-    \item \( T \): total number of trees in the model
-    \item \( L_i^t \): leaf index of bond \( i \) in tree \( t \)
-    \item \( w_t \propto \Delta E_t = E_{t-1} - E_t \): weight proportional to reduction in loss when adding tree \( t \)
+    \item $T$: total number of trees in the model
+    \item $L_i^t$: leaf index of bond $i$ in tree $t$
+    \item $w_t \propto \Delta E_t = E_{t-1} - E_t$: weight proportional to reduction in loss when adding tree $t$
 \end{itemize}
 
 This favors trees that contribute most to model performance, assigning higher importance to early, more predictive trees.
 
 \subsection*{Relative Value Estimation via Peer Comparison}
 \begin{enumerate}[nosep]
-    \item Construct a similarity matrix \( S \in \mathbb{R}^{n \times n} \) using CatBoost path similarity.
-    \item For each bond \( i \), select its top-\( K \) nearest neighbors \( \mathcal{N}(i) \) based on similarity scores \( S_{ij} \).
+    \item Construct a similarity matrix $S \in \mathbb{R}^{n \times n}$ using CatBoost path similarity.
+    \item For each bond $i$, select its top-$K$ nearest neighbors $\mathcal{N}(i)$ based on similarity scores $S_{ij}$.
     \item Define relative value:
     \[
     \text{RV}_i = y_i - \operatorname{median} \{ y_j \,|\, j \in \mathcal{N}(i) \}
@@ -59,7 +59,7 @@ This favors trees that contribute most to model performance, assigning higher im
 \subsection*{Benchmarks}
 \begin{itemize}[nosep]
     \item \textbf{Yield-only Ranking:} Rank bonds purely by raw yield.
-    \item \textbf{DxS Rule-based:} Duration \(\times\) Spread, used to form fixed cohorts with similar durations and spreads.
+    \item \textbf{DxS Rule-based:} Duration $\times$ Spread, used to form fixed cohorts with similar durations and spreads.
 \end{itemize}
 
 \subsection*{Back-testing Methodology}
@@ -81,7 +81,7 @@ For each time window and generic group (e.g., CA 10–15yr), compute:
 
 \begin{align*}
     P_1 &= \mathbb{P}(\text{Top-ranked bond is among top 3 ex-post performers}) \\
-    P_2 &= \mathbb{P}(\Top ex-post performer was in top 3 recommended bonds)
+    P_2 &= \mathbb{P}(\text{Top ex-post performer was in top 3 recommended bonds})
 \end{align*}
 
 Then average performance:
@@ -90,7 +90,7 @@ Then average performance:
 \]
 
 \paragraph{Stability Metrics:}
-Standard deviation of performance metrics across time periods and peer group sizes (\( K \in \{5, 10, 50, 100\} \)).
+Standard deviation of performance metrics across time periods and peer group sizes ($K \in \{5, 10, 50, 100\}$).
 
 \subsection*{Ablation and Feature Insight}
 

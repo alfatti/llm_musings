@@ -10,6 +10,18 @@ from langchain_core.output_parsers import StrOutputParser
 
 def load_unit_blocks_as_markdown(path: str) -> List[str]:
     df = pd.read_excel(path, header=None)
+
+    # Step 1: Extract first non-empty row as header
+    for i, row in df.iterrows():
+        if not row.isnull().all():
+            header = row.tolist()
+            break
+    else:
+        raise ValueError("No non-empty header row found")
+
+    # Step 2: Drop the header row and process blocks
+    df = df.iloc[i + 1:].reset_index(drop=True)
+
     blocks = []
     current_block = []
 
@@ -17,7 +29,7 @@ def load_unit_blocks_as_markdown(path: str) -> List[str]:
         if row.isnull().all():
             if current_block:
                 df_block = pd.DataFrame(current_block).ffill(axis=0)
-                df_block.columns = [f"col_{i}" for i in range(df_block.shape[1])]
+                df_block.columns = header[:df_block.shape[1]]
                 markdown = df_block.to_markdown(index=False)
                 blocks.append(markdown)
                 current_block = []
@@ -26,7 +38,7 @@ def load_unit_blocks_as_markdown(path: str) -> List[str]:
 
     if current_block:
         df_block = pd.DataFrame(current_block).ffill(axis=0)
-        df_block.columns = [f"col_{i}" for i in range(df_block.shape[1])]
+        df_block.columns = header[:df_block.shape[1]]
         markdown = df_block.to_markdown(index=False)
         blocks.append(markdown)
 

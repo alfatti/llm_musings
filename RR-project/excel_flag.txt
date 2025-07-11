@@ -1,0 +1,11 @@
+=IF(AND(
+    OR(
+        AND($F$1>=A2, $F$1<=B2),
+        AND(
+            ISERROR(SEARCH("VACANT", C2)),
+            ISERROR(SEARCH("MODEL", C2)),
+            ISERROR(SEARCH("EMPLOYEE", C2))
+        )
+    ),
+    D2=0),
+"Flag", "")

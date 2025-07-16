@@ -1,73 +1,39 @@
 import pandas as pd
 import re
 
-# Load your Excel file (adjust as needed)
+# Load Excel file
 df = pd.read_excel("rent_roll.xlsx", header=0)
 
-# Columns you want to forward-fill when blank in sub-rows
-forward_cols = ["Unit", "Address", "SQFT", "Status"]
-
-# Initialize
+# Initialize variables
 current_unit_type = None
-last_main_row = None
-rows = []
+records = []
 
-for idx, row in df.iterrows():
+for _, row in df.iterrows():
     first_cell = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
 
-    # --- Detect "Unit Type: ..." marker ---
+    # Detect Unit Type marker like "Unit Type: Studio"
     if first_cell.startswith("Unit Type:"):
+        # Extract the unit type using regex or string split
         match = re.match(r"Unit Type:\s*(.*)", first_cell)
         if match:
             current_unit_type = match.group(1).strip()
-            print(f"[{idx}] Found Unit Type: {current_unit_type}")
-        continue
+        continue  # Skip this row
 
-    # --- Skip mostly empty rows ---
+    # Skip rows that are mostly empty
     if row.notna().sum() < 2:
         continue
 
-    # --- Determine if it's a new unit (based on non-empty 'Unit') ---
-    is_new_unit = pd.notna(row.get("Unit"))
+    # Valid data row — attach the unit type
+    row_data = row.to_dict()
+    row_data["Unit Type"] = current_unit_type
+    records.append(row_data)
 
-    # If new main row, store as last_main_row
-    if is_new_unit:
-        last_main_row = row.to_dict()
-        last_main_row["Unit Type"] = current_unit_type
-        rows.append(last_main_row)
-    else:
-        # Charge sub-row: forward-fill unit data
-        if last_main_row:
-            filled_row = row.copy()
-            for col in forward_cols:
-                filled_row[col] = last_main_row.get(col)
-            filled_row["Unit Type"] = current_unit_type
-            rows.append(filled_row.to_dict())
-        else:
-            print(f"[{idx}] Warning: sub-row found before any main row — skipped")
-            continue
+# Assemble final DataFrame
+unpivoted_df = pd.DataFrame(records)
 
-    # --- Insert separator row if next row is a new unit or Unit Type ---
-    next_index = idx + 1
-    if next_index < len(df):
-        next_row = df.iloc[next_index]
-        next_first = str(next_row.iloc[0]) if pd.notna(next_row.iloc[0]) else ""
-        is_unit_type = next_first.startswith("Unit Type:")
-        is_new_unit = pd.notna(next_row.get("Unit"))
+# Optional cleanup
+unpivoted_df = unpivoted_df.dropna(subset=["Unit"])  # if "Unit" is the key column
 
-        if is_unit_type or is_new_unit:
-            rows.append({})  # blank row separator
-
-# Build final DataFrame
-final_df = pd.DataFrame(rows)
-
-# If still empty, show a sample of `rows`
-if final_df.empty:
-    print("Final DataFrame is empty. Sample of raw rows:")
-    for r in rows[:5]:
-        print(r)
-
-# Preview
-print(final_df.head(10))
-# Optionally save
-# final_df.to_excel("unpivoted_rent_roll_with_blocks.xlsx", index=False)
+# Save or display
+print(unpivoted_df)
+# unpivoted_df.to_excel("unpivoted_rent_roll_unpivoted.xlsx", index=False)

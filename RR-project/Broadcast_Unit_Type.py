@@ -31,18 +31,19 @@ for _, row in df.iterrows():
 # Assemble final DataFrame
 unpivoted_df = pd.DataFrame(records)
 
-# Optional cleanup
-unpivoted_df = unpivoted_df.dropna(subset=["Unit"])  # if "Unit" is the key column
+# Step 1: Find indices where a new unit starts after NaNs
+break_indices = unpivoted_df.index[unpivoted_df["Unit"].notna() & unpivoted_df["Unit"].shift().isna()].tolist()
 
-# Insert empty row between unit chunks (based on NaNs in 'Unit' column)
-break_indices = unpivoted_df.index[unpivoted_df["Unit"].notna() & unpivoted_df["Unit"].shift().isna()]
-empty_rows = pd.DataFrame([{}] * len(break_indices), columns=unpivoted_df.columns)
-unpivoted_df_with_gaps = pd.concat(
-    [
-        unpivoted_df.loc[:i - 1].append(empty_rows.iloc[[j]])
-        if j < len(empty_rows)
-        else unpivoted_df.loc[:i - 1]
-        for j, i in enumerate(break_indices.tolist() + [len(unpivoted_df)])
-    ],
-    ignore_index=True
-)
+# Step 2: Prepare output chunks with blank rows in between
+chunks = []
+prev_idx = 0
+
+for idx in break_indices + [len(unpivoted_df)]:
+    chunk = unpivoted_df.iloc[prev_idx:idx]
+    chunks.append(chunk)
+    chunks.append(pd.DataFrame([{}], columns=unpivoted_df.columns))  # blank row
+    prev_idx = idx
+
+# Step 3: Combine
+unpivoted_df_with_gaps = pd.concat(chunks, ignore_index=True)
+

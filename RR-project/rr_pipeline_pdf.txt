@@ -1,0 +1,65 @@
+                   ┌──────────────────────────┐
+                   │     User Uploads UI      │
+                   │ ─ Rent Roll PDF          │
+                   │ ─ Concessions Excel      │
+                   └────────────┬─────────────┘
+                                │
+                                ▼
+                  ┌────────────────────────────┐
+                  │   Preprocessing (Python)   │
+                  │ ─ pdfplumber → Page-wise   │
+                  │ ─ Normalize concessions     │
+                  └────────────┬───────────────┘
+                               │
+                               ▼
+     ┌────────────────────────────────────────────────┐
+     │     Extract Page Text → Markdown Chunk         │
+     └────────────────────────────────────────────────┘
+                               │
+                               ▼
+        ┌──────────────────────────────────────┐
+        │   Gemini 2.5 Pro via Vertex AI API   │
+        │ ─ Prompt per Page                    │
+        │ ─ Extracted Fields → JSON            │
+        └────────────────┬─────────────────────┘
+                         ▼
+        ┌────────────────────────────────────────────┐
+        │        (Optional) LLM Output Validator     │◄────────────────┐
+        │ ─ JSON Schema / Sanity Check on Extract    │                 │
+        └────────────────────────────────────────────┘                 │
+                         │                                             │
+                         └──────────────────────► If Invalid, Retry ──┘
+
+                         ▼
+             ┌────────────────────────────┐
+             │    Postprocessing (Python) │
+             │ ─ Combine Page Results     │
+             │ ─ LEFT JOIN with Concessions│
+             │   on Unit                   │
+             │ ─ Add Columns:              │
+             │   • is_concession           │
+             │   • concession_amount       │
+             └────────────┬───────────────┘
+                          ▼
+               ┌────────────────────┐
+               │  Export as Excel   │
+               │ ─ rent_roll_extract│
+               └─────────┬──────────┘
+                         ▼
+          ┌────────────────────────────────────┐
+          │    Sanity Check Summary Report     │
+          │ ─ Total Rent                       │
+          │ ─ # of Occupied Units              │
+          │ ─ # of Vacant Units                │
+          └────────────────────────────────────┘
+                         ▼
+       ┌─────────────────────────────────────────────┐
+       │    (Optional) Dashboard UI or Streamlit     │
+       │ ─ Visualize Summary                         │
+       │ ─ Manual Edits / Review / Export            │
+       └─────────────────────────────────────────────┘
+
+       ┌─────────────────────────────────────────────┐
+       │    (Optional) Versioning & Logging Layer    │
+       │ ─ Track file history, extract versions, etc.│
+       └─────────────────────────────────────────────┘

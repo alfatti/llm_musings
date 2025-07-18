@@ -21,15 +21,20 @@ app.add_middleware(
 # === Endpoint: Extract Only ===
 @app.post("/extract")
 async def extract_rent_roll_only(rent_roll: UploadFile = File(...)):
-    df = pd.read_excel(rent_roll.file)
-    extracted_df = extract_rent_roll(df)
+    try:
+        contents = await rent_roll.read()
+        df = pd.read_excel(BytesIO(contents))
+        extracted_df = extract_rent_roll(df)
 
-    buffer = BytesIO()
-    extracted_df.to_excel(buffer, index=False)
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
-        "Content-Disposition": "attachment; filename=rent_roll_extract.xlsx"
-    })
+        buffer = BytesIO()
+        extracted_df.to_excel(buffer, index=False)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
+            "Content-Disposition": "attachment; filename=rent_roll_extract.xlsx"
+        })
+    except Exception as e:
+        print("❌ Error in /extract:", str(e))
+        raise e
 
 # === Endpoint: Extract + Join with Concessions ===
 @app.post("/extract_and_join")
@@ -37,15 +42,23 @@ async def extract_and_join(
     rent_roll: UploadFile = File(...),
     concession: UploadFile = File(...)
 ):
-    rent_df = pd.read_excel(rent_roll.file)
-    cons_df = pd.read_excel(concession.file)
+    try:
+        rent_bytes = await rent_roll.read()
+        cons_bytes = await concession.read()
 
-    extracted_df = extract_rent_roll(rent_df)
-    final_df = join_concessions(extracted_df, cons_df)
+        rent_df = pd.read_excel(BytesIO(rent_bytes))
+        cons_df = pd.read_excel(BytesIO(cons_bytes))
 
-    buffer = BytesIO()
-    final_df.to_excel(buffer, index=False)
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
-        "Content-Disposition": "attachment; filename=rent_roll_final.xlsx"
-    })
+        extracted_df = extract_rent_roll(rent_df)
+        final_df = join_concessions(extracted_df, cons_df)
+
+        buffer = BytesIO()
+        final_df.to_excel(buffer, index=False)
+        buffer.seek(0)
+        return StreamingResponse(buffer, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
+            "Content-Disposition": "attachment; filename=rent_roll_final.xlsx"
+        })
+    except Exception as e:
+        print("❌ Error in /extract_and_join:", str(e))
+        raise e
+

@@ -62,49 +62,50 @@ if st.button("❌ Abort / Clear"):
     st.session_state.clear()
     st.rerun()
 
-# === Action ===
-if rent_roll_file and not concession_file:
-    st.info("📢 Only Rent Roll uploaded. Proceeding with extraction only...")
+# === START BUTTON ===
+st.markdown("###")
+start_extraction = st.button("▶️ Start Extraction", disabled=not rent_roll_file)
 
-    with st.spinner("🔄 Running extraction..."):
-        rent_df = pd.read_excel(rent_roll_file)
-        extracted_df = extract_rent_roll(rent_df)
+# === Extraction Logic ===
+if start_extraction:
+    if rent_roll_file and not concession_file:
+        st.info("📢 Only Rent Roll uploaded. Proceeding with extraction only...")
 
-    st.success("✅ Extraction complete!")
-    buffer = BytesIO()
-    extracted_df.to_excel(buffer, index=False)
-    st.download_button(
-        label="📥 Download Extracted Rent Roll",
-        data=buffer.getvalue(),
-        file_name="rent_roll_extract.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        with st.spinner("🔄 Running extraction..."):
+            rent_df = pd.read_excel(rent_roll_file)
+            extracted_df = extract_rent_roll(rent_df)
 
-elif rent_roll_file and concession_file:
-    st.info("📢 Both Rent Roll and Concession uploaded. Proceeding with full enrichment...")
+        st.success("✅ Extraction complete!")
+        buffer = BytesIO()
+        extracted_df.to_excel(buffer, index=False)
+        st.download_button(
+            label="📥 Download Extracted Rent Roll",
+            data=buffer.getvalue(),
+            file_name="rent_roll_extract.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-    with st.spinner("🔄 Running extraction and joining..."):
-        rent_df = pd.read_excel(rent_roll_file)
-        cons_df = pd.read_excel(concession_file)
-        extracted_df = extract_rent_roll(rent_df)
-        final_df = join_concessions(extracted_df, cons_df)
+    elif rent_roll_file and concession_file:
+        st.info("📢 Both Rent Roll and Concession uploaded. Proceeding with full enrichment...")
 
-    st.success("✅ Extraction and enrichment complete!")
-    buffer = BytesIO()
-    final_df.to_excel(buffer, index=False)
-    st.download_button(
-        label="📥 Download Final Joined File",
-        data=buffer.getvalue(),
-        file_name="rent_roll_final.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        with st.spinner("🔄 Running extraction and joining..."):
+            rent_df = pd.read_excel(rent_roll_file)
+            cons_df = pd.read_excel(concession_file)
+            extracted_df = extract_rent_roll(rent_df)
+            final_df = join_concessions(extracted_df, cons_df)
 
-elif concession_file and not rent_roll_file:
-    st.error("⚠️ Error: Rent Roll is required to proceed.")
+        st.success("✅ Extraction and enrichment complete!")
+        buffer = BytesIO()
+        final_df.to_excel(buffer, index=False)
+        st.download_button(
+            label="📥 Download Final Joined File",
+            data=buffer.getvalue(),
+            file_name="rent_roll_final.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-else:
-    st.warning("Please upload at least the Rent Roll file.")
-
+    elif concession_file and not rent_roll_file:
+        st.error("⚠️ Error: Rent Roll is required to proceed.")
 # === Footer ===
 st.markdown("---")
 st.markdown("<p style='text-align: center; font-size: 0.85em;'>Built for internal demo. © 2025</p>", unsafe_allow_html=True)

@@ -21,9 +21,18 @@ st.set_page_config(
 )
 
 # === Header ===
-st.markdown("<h1 style='text-align: center;'>🏢 RR AI Extractor</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center;'>AI-powered Rent Roll Data Extraction Tool</h4>", unsafe_allow_html=True)
+# === Header ===
+col_logo, col_title = st.columns([1, 5])
+
+with col_logo:
+    st.image("company_logo.png", width=80)  # Adjust size as needed
+
+with col_title:
+    st.markdown("<h1 style='margin-bottom: 0;'>RR AI Extractor</h1>", unsafe_allow_html=True)
+    st.markdown("<h4 style='margin-top: 0;'>AI-powered Rent Roll Data Extraction Tool</h4>", unsafe_allow_html=True)
+
 st.markdown("---")
+
 
 # === Logo Placeholder ===
 st.image("your_logo.png", width=200)  # Replace with actual logo path or remove

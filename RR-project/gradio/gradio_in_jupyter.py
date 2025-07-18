@@ -39,7 +39,7 @@ def process_files_with_preview(rent_roll_file, concession_file):
             rent_df.head(),
             None,
             extracted_df.head(),
-            tmp_path
+            gr.update(value=tmp_path, visible=True)
         )
     else:
         cons_df = pd.read_excel(concession_file)
@@ -53,7 +53,7 @@ def process_files_with_preview(rent_roll_file, concession_file):
             rent_df.head(),
             cons_df.head(),
             final_df.head(),
-            tmp_path
+            gr.update(value=tmp_path, visible=True)
         )
 
 # === Gradio UI ===

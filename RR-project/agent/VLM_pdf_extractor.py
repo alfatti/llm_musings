@@ -1,184 +1,77 @@
-#!pip install protobuf==4.25.3 google-generativeai==0.5.2 langchain-google-genai==1.0.1 langchain==0.1.19 pandas markdown beautifulsoup4 pdf2image matplotlib
-
-
+import io
+import pandas as pd
 from pdf2image import convert_from_path
-from pathlib import Path
-import os
+from PIL import Image
+import google.generativeai as genai
+from markdown import markdown
+from bs4 import BeautifulSoup
 
-# Define the input PDF path and output directory
-pdf_path = "/mnt/data/rent_roll_sample_final.pdf"
-output_dir = "/mnt/data/pdf_images"
-os.makedirs(output_dir, exist_ok=True)
+# -------------------------------
+# 1. Gemini Setup
+# -------------------------------
+genai.configure(api_key="YOUR_API_KEY")  # Replace with your Gemini API Key
+model = genai.GenerativeModel("gemini-pro-vision")
 
-# Convert PDF to images (one image per page)
+# -------------------------------
+# 2. Convert PDF to in-memory images
+# -------------------------------
+pdf_path = "rent_roll_sample_final.pdf"
 images = convert_from_path(pdf_path, dpi=300)
 
-# Save each image to the output directory
-image_paths = []
-for i, img in enumerate(images):
-    image_path = Path(output_dir) / f"page_{i+1}.png"
-    img.save(image_path, "PNG")
-    image_paths.append(str(image_path))
+# -------------------------------
+# 3. Prompt Template
+# -------------------------------
+PROMPT = """
+You are a rent roll extraction assistant.
+The image contains a rent roll table used in commercial real estate.
+Extract all tables you can see and return them in Markdown format.
+- Include all rows and units even if data is missing
+- Preserve column headers as seen
+- Return only Markdown tables (no explanations)
+"""
 
-
-
-#=========================================================
-import base64
-import requests
-import pandas as pd
-from markdownify import markdownify as md
-from io import StringIO
-from PIL import Image
-import matplotlib.pyplot as plt
-
-# --- CONFIGURATION ---
-GEMINI_API_KEY = "YOUR_API_KEY"  # Replace with your actual Gemini API Key
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent"
-
-# --- FUNCTION TO LOAD IMAGE AS BASE64 ---
-def load_image_base64(image_path):
-    with open(image_path, "rb") as img_file:
-        encoded = base64.b64encode(img_file.read()).decode("utf-8")
-    return encoded
-
-# --- GEMINI VISION PROMPT ---
-VISION_PROMPT = [
-    {
-        "text": (
-            "This is a rent roll page. Please extract all tabular information and return it as a clean Markdown table. "
-            "Include all units, line items, and monetary amounts. Do not summarize. "
-            "Make sure each table has column headers and no rows are skipped. "
-            "Use one Markdown table per group if needed."
-        )
-    }
-]
-
-# --- FUNCTION TO CALL GEMINI VISION ---
-def extract_table_markdown_from_image(image_path):
-    image_base64 = load_image_base64(image_path)
-    request_body = {
-        "contents": [
-            {
-                "parts": VISION_PROMPT + [
-                    {"inlineData": {"mimeType": "image/png", "data": image_base64}}
-                ]
-            }
-        ]
-    }
-    response = requests.post(
-        GEMINI_ENDPOINT,
-        headers={"Authorization": f"Bearer {GEMINI_API_KEY}"},
-        json=request_body,
-    )
-    if response.status_code != 200:
-        raise Exception(f"Gemini Vision error: {response.text}")
-    
-    reply = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return reply
-
-# --- FUNCTION TO PARSE MARKDOWN TO DATAFRAME ---
-def markdown_to_dataframes(markdown_text):
-    import re
-    import markdown
-    from bs4 import BeautifulSoup
-
-    # Convert Markdown to HTML and parse tables
-    html = markdown.markdown(markdown_text, extensions=["markdown.extensions.tables"])
+# -------------------------------
+# 4. Helper: Convert Markdown → DataFrame
+# -------------------------------
+def markdown_to_df(markdown_str):
+    html = markdown(markdown_str)
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
-
     dfs = []
     for table in tables:
-        df = pd.read_html(str(table))[0]
+        headers = [th.text.strip() for th in table.find_all("th")]
+        rows = []
+        for row in table.find_all("tr")[1:]:
+            cells = [td.text.strip() for td in row.find_all("td")]
+            rows.append(cells)
+        df = pd.DataFrame(rows, columns=headers if headers else None)
         dfs.append(df)
     return dfs
 
-# --- MAIN PROCESSING FUNCTION ---
-def process_rent_roll_pages(image_paths):
-    all_dataframes = []
-    for img_path in image_paths:
-        print(f"Processing: {img_path}")
-        markdown = extract_table_markdown_from_image(img_path)
-        dfs = markdown_to_dataframes(markdown)
-        all_dataframes.extend(dfs)
-    return all_dataframes
+# -------------------------------
+# 5. Run Gemini on Each Image
+# -------------------------------
+all_dfs = []
 
+for idx, img in enumerate(images):
+    print(f"Processing page {idx+1}")
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    img_byte_arr.seek(0)
 
-#===================================================
-#langchain
-#===================================================
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage
-import base64
-import pandas as pd
-import markdown
-from bs4 import BeautifulSoup
+    response = model.generate_content([PROMPT, img_byte_arr], stream=False)
+    md = response.text
 
-# LangChain LLM Client
-llm = ChatGoogleGenerativeAI(model="gemini-pro-vision", temperature=0)
+    try:
+        dfs = markdown_to_df(md)
+        all_dfs.extend(dfs)
+    except Exception as e:
+        print(f"Markdown parsing failed on page {idx+1}: {e}")
+        print(md)
 
-# Helper: Convert PNG image to inline base64 content
-def encode_image_base64(image_path: str):
-    with open(image_path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-# LangChain-compatible function
-def extract_markdown_tables_with_langchain(image_path: str) -> list[pd.DataFrame]:
-    prompt = (
-        "This is a rent roll page. Extract all tabular data as Markdown tables. "
-        "Include headers, monetary amounts, and every row, even if some cells are blank. "
-        "Do not summarize or skip details."
-    )
-
-    # Encode the image for Gemini Vision
-    image_base64 = encode_image_base64(image_path)
-    image_data = {
-        "mime_type": "image/png",
-        "data": image_base64
-    }
-
-    # Send the image + prompt to Gemini Vision via LangChain
-    response = llm.invoke([HumanMessage(content=[{"type": "text", "text": prompt},
-                                                  {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}])])
-
-    markdown_text = response.content
-
-    # Convert markdown to DataFrames
-    html = markdown.markdown(markdown_text, extensions=["markdown.extensions.tables"])
-    soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table")
-    dfs = [pd.read_html(str(t))[0] for t in tables]
-    return dfs
-
-#===============================
-#minimal
-#===============================
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage
-import base64, pandas as pd, markdown, bs4
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-preview-04-17",   # later: "gemini-2.5-flash"
-    temperature=0
-)
-
-def encode_png(path):                 # inline base-64
-    return base64.b64encode(open(path, "rb").read()).decode()
-
-def markdown_tables_from_image(img_path: str) -> list[pd.DataFrame]:
-    img_b64 = encode_png(img_path)
-    prompt_parts = [
-        {"type":"text", "text":
-         "This is a rent-roll page. Convert **every table** to Markdown. "
-         "Include headers and all rows, even if blank."},
-        {"type":"image_url", "image_url":{"url":f"data:image/png;base64,{img_b64}"}}
-    ]
-
-    md_response = llm.invoke([HumanMessage(content=prompt_parts)]).content
-
-    # --- Markdown → DataFrames ---
-    html = markdown.markdown(md_response, extensions=["tables"])
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    return [pd.read_html(str(t))[0] for t in soup.find_all("table")]
-
-
+# -------------------------------
+# 6. Combine or Inspect
+# -------------------------------
+for i, df in enumerate(all_dfs):
+    print(f"\n--- Table {i+1} ---")
+    print(df.head())

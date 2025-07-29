@@ -1,10 +1,11 @@
-import io
-import pandas as pd
+import base64
 from pdf2image import convert_from_path
 from PIL import Image
 import google.generativeai as genai
 from markdown import markdown
 from bs4 import BeautifulSoup
+import pandas as pd
+from io import BytesIO
 
 # -------------------------------
 # 1. Gemini Setup
@@ -13,32 +14,36 @@ genai.configure(api_key="YOUR_API_KEY")  # Replace with your Gemini API Key
 model = genai.GenerativeModel("gemini-pro-vision")
 
 # -------------------------------
-# 2. Convert PDF to in-memory images
-# -------------------------------
-pdf_path = "rent_roll_sample_final.pdf"
-images = convert_from_path(pdf_path, dpi=300)
-
-# -------------------------------
-# 3. Prompt Template
+# 2. Prompt Template
 # -------------------------------
 PROMPT = """
-You are a rent roll extraction assistant.
-The image contains a rent roll table used in commercial real estate.
-Extract all tables you can see and return them in Markdown format.
-- Include all rows and units even if data is missing
-- Preserve column headers as seen
-- Return only Markdown tables (no explanations)
+The image is a page from a rent roll document used for commercial real estate underwriting.
+Extract all visible tables and output them strictly in Markdown format.
+
+Guidelines:
+- Include all rows (even if some columns are empty)
+- Preserve header structure
+- If multiple tables, output them sequentially, separated by newlines
+- No explanations, just the tables
 """
 
 # -------------------------------
-# 4. Helper: Convert Markdown → DataFrame
+# 3. Helper: Encode image to base64
 # -------------------------------
-def markdown_to_df(markdown_str):
-    html = markdown(markdown_str)
+def image_to_base64(pil_img: Image.Image) -> str:
+    buffered = BytesIO()
+    pil_img.save(buffered, format="PNG")
+    encoded = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return encoded
+
+# -------------------------------
+# 4. Helper: Convert Markdown → List of DataFrames
+# -------------------------------
+def markdown_to_df(md: str):
+    html = markdown(md)
     soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table")
     dfs = []
-    for table in tables:
+    for table in soup.find_all("table"):
         headers = [th.text.strip() for th in table.find_all("th")]
         rows = []
         for row in table.find_all("tr")[1:]:
@@ -49,29 +54,32 @@ def markdown_to_df(markdown_str):
     return dfs
 
 # -------------------------------
-# 5. Run Gemini on Each Image
+# 5. Load PDF and Run Extraction
 # -------------------------------
+pdf_path = "rent_roll_sample_final.pdf"
+images = convert_from_path(pdf_path, dpi=300)
+
 all_dfs = []
 
 for idx, img in enumerate(images):
-    print(f"Processing page {idx+1}")
-    img_byte_arr = io.BytesIO()
-    img.save(img_byte_arr, format='PNG')
-    img_byte_arr.seek(0)
-
-    response = model.generate_content([PROMPT, img_byte_arr], stream=False)
-    md = response.text
+    print(f"🔍 Processing page {idx + 1}")
+    
+    b64_image = image_to_base64(img)
 
     try:
-        dfs = markdown_to_df(md)
+        response = model.generate_content(
+            [PROMPT, {"mime_type": "image/png", "data": b64_image}],
+            stream=False
+        )
+        markdown_output = response.text
+        dfs = markdown_to_df(markdown_output)
         all_dfs.extend(dfs)
     except Exception as e:
-        print(f"Markdown parsing failed on page {idx+1}: {e}")
-        print(md)
+        print(f"❌ Error on page {idx + 1}: {e}")
 
 # -------------------------------
-# 6. Combine or Inspect
+# 6. View or Combine Output
 # -------------------------------
 for i, df in enumerate(all_dfs):
-    print(f"\n--- Table {i+1} ---")
+    print(f"\n📄 Table {i+1}")
     print(df.head())

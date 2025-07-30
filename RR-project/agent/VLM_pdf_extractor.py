@@ -7,6 +7,21 @@ from bs4 import BeautifulSoup
 import pandas as pd
 from io import BytesIO
 
+PROMPT_ADDENDUM =
+"""You are a rent roll extraction engine.
+
+Input: A page from a rent roll document (as an image).
+Output: Markdown tables ONLY.
+
+Guidelines:
+- Return one or more Markdown tables that represent the structured information on the page.
+- Do NOT include any descriptive text.
+- Do NOT explain what the table is.
+- Do NOT preface your answer with any summary.
+- Do NOT say "Here is the table below".
+- Just return Markdown tables directly.
+"""
+
 # -------------------------------
 # 1. Gemini Setup
 # -------------------------------

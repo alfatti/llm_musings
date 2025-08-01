@@ -1,23 +1,23 @@
 import pandas as pd
+import math
 
-def dataframe_to_markdown_chunks(df: pd.DataFrame, chunk_size: int = 50) -> list:
+def split_df_to_markdown_chunks(df: pd.DataFrame, rows_per_chunk: int = 30):
     """
-    Splits a DataFrame into row-wise chunks and converts each to Markdown.
-
-    Args:
-        df (pd.DataFrame): Input DataFrame (e.g., from Excel).
-        chunk_size (int): Number of rows per chunk.
-
+    Splits a DataFrame into markdown-formatted chunks, each with headers.
+    
+    Parameters:
+        df (pd.DataFrame): The DataFrame to split.
+        rows_per_chunk (int): Max number of data rows per chunk (headers not counted).
+    
     Returns:
-        List[str]: List of Markdown strings.
+        List[str]: Markdown-formatted table strings.
     """
-    chunks = []
-    num_rows = len(df)
+    num_chunks = math.ceil(len(df) / rows_per_chunk)
+    markdown_chunks = []
 
-    for start in range(0, num_rows, chunk_size):
-        end = start + chunk_size
-        chunk_df = df.iloc[start:end]
-        markdown_chunk = chunk_df.to_markdown(index=False)  # omit index if not needed
-        chunks.append(markdown_chunk)
+    for i in range(num_chunks):
+        chunk = df.iloc[i * rows_per_chunk : (i + 1) * rows_per_chunk]
+        markdown = chunk.to_markdown(index=False)  # Include column headers, omit index
+        markdown_chunks.append(markdown)
 
-    return chunks
+    return markdown_chunks

@@ -15,9 +15,21 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # or hardcode for testing
 # === STEP 1: Load Excel Preview and Screenshot ===
 def get_excel_top_image(path, n_rows=20):
     df_preview = pd.read_excel(path, sheet_name=0, header=None, nrows=n_rows)
-    fig = df_preview.style.set_table_attributes("style='display:inline'").to_image()
-    buf = io.BytesIO()
-    fig.save(buf, format='PNG')
+
+    fig, ax = plt.subplots(figsize=(12, 0.5 * n_rows))  # Height adjusts to number of rows
+    ax.axis('off')
+    table = ax.table(cellText=df_preview.values,
+                     colLabels=None,
+                     loc='center',
+                     cellLoc='left')
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1.2, 1.2)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
     return buf.getvalue()
 
 # === STEP 2: Encode Image for Gemini ===

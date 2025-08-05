@@ -102,6 +102,47 @@ def execute_normalization_script(script, df_raw):
     exec(script, {}, local_vars)
     return local_vars.get("df", df_raw)
 
+
+import matplotlib.pyplot as plt
+from io import BytesIO
+import os
+
+def save_dataframe_preview_image(df, excel_path, n_rows=20):
+    """
+    Saves a PNG image of the top n_rows of a DataFrame.
+    The image filename is derived from the Excel file name.
+
+    Args:
+        df (pd.DataFrame): The normalized DataFrame.
+        excel_path (str): Path to the original Excel file (used for naming).
+        n_rows (int): Number of top rows to include in the image.
+    """
+    df_preview = df.head(n_rows)
+
+    fig, ax = plt.subplots(figsize=(12, 0.5 * n_rows))
+    ax.axis('off')
+    table = ax.table(cellText=df_preview.values,
+                     colLabels=df_preview.columns,
+                     loc='center',
+                     cellLoc='left')
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1.2, 1.2)
+
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+
+    # Create output filename
+    basename = os.path.splitext(os.path.basename(excel_path))[0]
+    output_png = f"{basename}_normalized_preview.png"
+    with open(output_png, "wb") as f:
+        f.write(buf.getvalue())
+
+    print(f"Normalized DataFrame preview saved to: {output_png}")
+
+
 # === MAIN ===
 if __name__ == "__main__":
     # Load the raw data

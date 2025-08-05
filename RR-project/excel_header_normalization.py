@@ -13,10 +13,12 @@ GEMINI_ENDPOINT = "https://your_gemini_endpoint_here"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # or hardcode for testing
 
 # === STEP 1: Load Excel Preview and Screenshot ===
-def get_excel_top_image(path, n_rows=20):
-    df_preview = pd.read_excel(path, sheet_name=0, header=None, nrows=n_rows)
+def get_excel_top_image(excel_path, n_rows=20, save_to_disk=True):
+    # Load preview
+    df_preview = pd.read_excel(excel_path, sheet_name=0, header=None, nrows=n_rows)
 
-    fig, ax = plt.subplots(figsize=(12, 0.5 * n_rows))  # Height adjusts to number of rows
+    # Render as matplotlib table
+    fig, ax = plt.subplots(figsize=(12, 0.5 * n_rows))
     ax.axis('off')
     table = ax.table(cellText=df_preview.values,
                      colLabels=None,
@@ -27,10 +29,21 @@ def get_excel_top_image(path, n_rows=20):
     table.set_fontsize(8)
     table.scale(1.2, 1.2)
 
+    # Save to BytesIO
     buf = BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight')
     plt.close(fig)
-    return buf.getvalue()
+    img_bytes = buf.getvalue()
+
+    # Save to disk with Excel name prepended
+    if save_to_disk:
+        basename = os.path.splitext(os.path.basename(excel_path))[0]
+        output_png = f"{basename}_preview.png"
+        with open(output_png, "wb") as f:
+            f.write(img_bytes)
+        print(f"Image saved to: {output_png}")
+
+    return img_bytes
 
 # === STEP 2: Encode Image for Gemini ===
 def encode_image_to_base64(img_bytes):

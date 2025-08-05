@@ -73,6 +73,16 @@ def query_gemini(prompt_json):
     response.raise_for_status()
     return response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
+
+
+def strip_markdown_code_fence(code_str):
+    lines = code_str.strip().splitlines()
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
 # === STEP 5: Execute the Returned Code ===
 def execute_normalization_script(script, df_raw):
     local_vars = {'pd': pd, 'df': df_raw.copy()}

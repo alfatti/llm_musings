@@ -1,0 +1,14 @@
+Private Function GetBearerToken() As String
+    On Error GoTo EH
+    Dim v As Variant
+    v = ThisWorkbook.Names("GEMINI_BEARER").RefersToRange.Value
+    Dim tok As String
+    tok = Trim(CStr(v))
+    If Len(tok) = 0 Then Err.Raise vbObjectError + 102, , _
+        "Named range GEMINI_BEARER is empty. Paste your token in __secrets!A1."
+    GetBearerToken = tok
+    Exit Function
+EH:
+    Err.Raise vbObjectError + 102, , _
+        "Named range GEMINI_BEARER not found. Create it (Formulas → Name Manager) pointing to __secrets!A1."
+End Function

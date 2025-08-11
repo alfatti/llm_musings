@@ -308,30 +308,35 @@ Private Function HttpPostJson(url As String, bearer As String, body As String) A
 End Function
 
 Private Function ExtractTextFromGeminiResponse(resp As String) As String
-    ' Minimal JSON path extraction without external libs. Adjust if your gateway returns a different shape.
-    ' We look for the first occurrence of "text":"..." and collect its value(s).
+    ' Minimal JSON path extraction without external libs.
+    ' We look for the first occurrence of "text":"...".
     Dim out As String
     out = ""
 
     Dim pos As Long, startPos As Long, endPos As Long
     pos = 1
+
     Do
-        pos = InStr(pos, resp, "\"text\":\"")
+        pos = InStr(pos, resp, """text"":""") ' <-- fixed straight quotes and escapes
         If pos = 0 Then Exit Do
-        startPos = pos + Len("\"text\":\"")
-        endPos = InStr(startPos, resp, "\"")
+
+        startPos = pos + Len("""text"":""")
+        endPos = InStr(startPos, resp, """") ' <-- fixed straight quotes
+
         If endPos = 0 Then Exit Do
 
         Dim piece As String
         piece = Mid$(resp, startPos, endPos - startPos)
         piece = Replace(piece, "\\n", vbCrLf)
-        piece = Replace(piece, "\\\"", "\"")
+        piece = Replace(piece, "\\\"", """")
         out = out & piece & vbCrLf
+
         pos = endPos + 1
     Loop
 
     ExtractTextFromGeminiResponse = Trim$(out)
 End Function
+
 
 Private Function ExtractCSVBlock(modelText As String) As String
     ' Keep only lines that look like CSV with the expected delimiter '|'

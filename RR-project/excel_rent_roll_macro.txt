@@ -469,10 +469,11 @@ End Function
 ' ==========================
 Private Function EscapeJson(s As String) As String
     Dim t As String
-    t = Replace(s, "\", "\\")
-    t = Replace(t, """", "\"")
-    t = Replace(t, vbCrLf, "\n")
-    t = Replace(t, vbCr, "\n")
-    t = Replace(t, vbLf, "\n")
+    t = Replace(s, "\", "\\")       ' escape backslashes
+    t = Replace(t, """", "\""")     ' escape double quotes
+    t = Replace(t, vbCrLf, "\n")    ' escape CRLF
+    t = Replace(t, vbCr, "\n")      ' escape CR
+    t = Replace(t, vbLf, "\n")      ' escape LF
     EscapeJson = t
 End Function
+

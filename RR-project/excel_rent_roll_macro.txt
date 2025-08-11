@@ -270,20 +270,13 @@ Private Function BuildPrompt() As String
 End Function
 
 Private Function BuildGeminiBody(prompt As String, tsv As String) As String
-    Dim json As String
-    json = "{" & _
-           """contents"": [{" & _
-           """role"": """user""", " & _
-           """parts"": [" & _
-           "{""text"": """" & EscapeJson(prompt) & "\n\nTSV INPUT:\n" & EscapeJson(tsv) & """}" & _
-           "]}]," & _
-           """generationConfig"": {" & _
-           """temperature"": 0," & _
-           """topP"": 0.95," & _
-           """topK"": 40" & _
-           "}}"
-    BuildGeminiBody = json
+    Dim payload As String
+    payload = "{""contents"":[{""role"":""user"",""parts"":[{""text"":""" & _
+              EscapeJson(prompt) & "\n\nTSV INPUT:\n" & EscapeJson(tsv) & """}]}]," & _
+              """generationConfig"":{""temperature"":0,""topP"":0.95,""topK"":40}}"
+    BuildGeminiBody = payload
 End Function
+
 
 Private Function GetBearerToken() As String
     ' TODO: Replace with your enterprise Vault retrieval.

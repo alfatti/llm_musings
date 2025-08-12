@@ -49,17 +49,32 @@ Public Sub ExtractRentRollPipeline()
 
     ' 2) Chunk → call Gemini → aggregate CSV
     Dim chunks As Collection: Set chunks = ChunkTSV(rrTSV, ROWS_PER_CHUNK)
-    Dim allCsv As String, i As Long
+    Dim csvChunk As String, rawResp As String, modelText As String
+    
     For i = 1 To chunks.Count
-        Dim csvChunk As String
-        csvChunk = CallGeminiExtract(chunks(i))
-        If Len(allCsv) = 0 Then
-            allCsv = csvChunk
-        Else
-            allCsv = AppendCsv(allCsv, csvChunk)
-        End If
+        DebugDump "CHUNK_TSV", Left$(chunks(i), 1000), i
+    
+        Dim prompt As String: prompt = BuildPrompt()
+        Dim bearer As String: bearer = GetBearerToken()
+        Dim body As String: body = BuildGeminiBody(prompt, chunks(i))
+    
+        rawResp = HttpPostJson(GEMINI_ENDPOINT, bearer, body)
+        DebugDump "RAW_RESP", Left$(rawResp, 4000), i
+    
+        modelText = ExtractTextFromGeminiResponse(rawResp)
+        DebugDump "MODEL_TEXT", Left$(modelText, 4000), i
+    
+        csvChunk = DetectAndNormalizeTable(modelText)
+        DebugDump "CSV_CHUNK", Left$(csvChunk, 2000), i
+    
+        If Len(allCsv) = 0 Then allCsv = csvChunk Else allCsv = AppendCsv(allCsv, csvChunk)
         DoEvents
     Next i
+
+    If Len(Trim$(allCsv)) = 0 Then
+        MsgBox "Gemini returned no parseable rows. See DEBUG_GEMINI (MODEL_TEXT/CSV_CHUNK).", vbExclamation
+        Exit Sub
+    End If
 
     ' 3) Write extracted CSV to the EXTRACT sheet
     WriteCSVToSheet allCsv, wsExtract, 1, 1
@@ -174,28 +189,36 @@ Private Function DetectHeaderRow(ws As Worksheet, mustHaveHeaders As Variant) As
 
     Dim r As Long, c As Long, hits As Long, needed As Long
     needed = UBound(mustHaveHeaders) - LBound(mustHaveHeaders) + 1
+
+    ' Try: contains most of the must-have headers
     For r = 1 To WorksheetFunction.Min(20, lastRow)
         hits = 0
         For c = 1 To lastCol
-            Dim cellVal As String
-            cellVal = Trim(CStr(ws.Cells(r, c).Value))
+            Dim cellVal As String: cellVal = Trim$(CStr(ws.Cells(r, c).Value))
             If Len(cellVal) > 0 Then
                 Dim k As Long
                 For k = LBound(mustHaveHeaders) To UBound(mustHaveHeaders)
-                    If StrComp(cellVal, CStr(mustHaveHeaders(k)), vbTextCompare) = 0 Then
-                        hits = hits + 1
-                        Exit For
+                    If Len(mustHaveHeaders(k)) > 0 Then
+                        If InStr(1, cellVal, CStr(mustHaveHeaders(k)), vbTextCompare) > 0 Then
+                            hits = hits + 1: Exit For
+                        End If
                     End If
                 Next k
             End If
         Next c
-        If hits >= WorksheetFunction.Max(1, needed - 1) Then
-            DetectHeaderRow = r
-            Exit Function
-        End If
+        If hits >= WorksheetFunction.Max(1, needed - 1) Then DetectHeaderRow = r: Exit Function
     Next r
-    DetectHeaderRow = 0
+
+    ' Fallback: pick the first row among top 20 with the **most non-empty cells**
+    Dim bestRow As Long: bestRow = 0
+    Dim bestFill As Long: bestFill = -1
+    For r = 1 To WorksheetFunction.Min(20, lastRow)
+        Dim fill As Long: fill = WorksheetFunction.CountA(ws.Rows(r))
+        If fill > bestFill Then bestFill = fill: bestRow = r
+    Next r
+    If bestRow > 0 Then DetectHeaderRow = bestRow Else DetectHeaderRow = 1
 End Function
+
 
 Private Function RangeToTSV(ws As Worksheet, headerRow As Long) As String
     Dim lastRow As Long, lastCol As Long
@@ -273,7 +296,7 @@ Private Function CallGeminiExtract(tsvChunk As String) As String
 
     Dim csvOut As String
     csvOut = ExtractTextFromGeminiResponse(resp)
-    csvOut = ExtractCSVBlock(csvOut)
+    csvOut = DetectAndNormalizeTable(csvOut)
 
     CallGeminiExtract = csvOut
 End Function
@@ -370,6 +393,80 @@ Private Function ExtractCSVBlock(modelText As String) As String
     Next i
     ExtractCSVBlock = Trim$(keeper)
 End Function
+
+Private Function DetectAndNormalizeTable(ByVal modelText As String) As String
+    Dim s As String: s = Trim$(modelText)
+
+    ' Strip fenced code blocks if present
+    If InStr(1, s, "```", vbTextCompare) > 0 Then
+        Dim a() As String: a = Split(s, "```")
+        ' pick the largest block
+        Dim j As Long, bestIdx As Long, bestLen As Long
+        For j = LBound(a) To UBound(a)
+            If Len(a(j)) > bestLen Then bestLen = Len(a(j)): bestIdx = j
+        Next j
+        s = Trim$(a(bestIdx))
+    End If
+
+    Dim lines() As String: lines = Split(s, vbCrLf)
+    Dim i As Long, header As String, delim As String, body As String
+
+    ' Find first line that looks like a header having Unit/Status/Rent in some order
+    For i = LBound(lines) To UBound(lines)
+        Dim L As String: L = Trim$(lines(i))
+        If Len(L) = 0 Then GoTo nexti
+
+        ' Try delimiters
+        Dim p() As String
+        If InStr(L, "|") > 0 Then
+            p = Split(L, "|"): delim = "|"
+        ElseIf InStr(L, vbTab) > 0 Then
+            p = Split(L, vbTab): delim = vbTab
+        ElseIf InStr(L, ",") > 0 Then
+            p = Split(L, ","): delim = ","
+        Else
+            GoTo nexti
+        End If
+
+        Dim fields As String: fields = LCase$(Join(p, " "))
+        If (InStr(fields, "unit") > 0) And (InStr(fields, "status") > 0) And (InStr(fields, "rent") > 0) Then
+            header = L
+            Exit For
+        End If
+nexti:
+    Next i
+
+    If Len(header) = 0 Then
+        ' Last resort: keep any line with delimiters, normalize to '|'
+        Dim fallback As String, anyDelim As String
+        For i = LBound(lines) To UBound(lines)
+            Dim li As String: li = lines(i)
+            If InStr(li, "|") > 0 Or InStr(li, vbTab) > 0 Or InStr(li, ",") > 0 Then
+                li = Replace(li, vbTab, "|")
+                li = Replace(li, ",", "|")
+                fallback = fallback & li & vbCrLf
+            End If
+        Next i
+        DetectAndNormalizeTable = Trim$(fallback)
+        Exit Function
+    End If
+
+    ' Collect from header down using the discovered delimiter
+    For i = i To UBound(lines)
+        Dim row As String: row = lines(i)
+        If Len(Trim$(row)) = 0 Then GoTo cont
+        If delim <> "|" Then
+            row = Replace(row, vbTab, "|")
+            row = Replace(row, ",", "|")
+            ' If header used commas, the replace will normalize
+        End If
+        body = body & row & vbCrLf
+cont:
+    Next i
+
+    DetectAndNormalizeTable = Trim$(body)
+End Function
+
 
 Private Function AppendCsv(existingCsv As String, newCsv As String) As String
     Dim newLines() As String

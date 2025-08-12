@@ -1,0 +1,32 @@
+'At the top (under your Consts), add:
+Private Const DEBUG_DUMP As Boolean = True   ' set False when done
+
+'Add this helper to capture what’s happening at each stage:
+Private Sub DebugDump(stage As String, payload As String, Optional chunkIdx As Long = 0)
+    If Not DEBUG_DUMP Then Exit Sub
+    Dim ws As Worksheet
+    If Not SheetExists("DEBUG_GEMINI") Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        ws.Name = "DEBUG_GEMINI"
+        ws.Range("A1:D1").Value = Array("Timestamp", "Stage", "ChunkIdx", "Snippet")
+        ws.Columns("A:D").ColumnWidth = 40
+    Else
+        Set ws = ThisWorkbook.Worksheets("DEBUG_GEMINI")
+    End If
+    Dim r As Long: r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
+    ws.Cells(r, 1).Value = Now
+    ws.Cells(r, 2).Value = stage
+    ws.Cells(r, 3).Value = chunkIdx
+    ws.Cells(r, 4).Value = Left$(payload, 32760) ' keep it small for Excel cell
+End Sub
+
+
+'2) Make sure TSV isn’t empty (and log it)
+rrTSV = RangeToTSV(wsRR, headerRow)
+DebugDump "TSV_BUILT", rrTSV, 0
+If Len(Trim$(rrTSV)) = 0 Then
+    MsgBox "RAW_RENT_ROLL TSV is empty. Check header detection and that the sheet has data under headers.", vbExclamation
+    Exit Sub
+End If
+
+

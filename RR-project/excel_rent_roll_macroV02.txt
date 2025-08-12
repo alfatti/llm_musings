@@ -1,20 +1,15 @@
-' Excel Rent Roll Macro — Gemini Pipeline (with intermediate sheet)
-'  - Model: Gemini 2.5 Flash (via REST)
-'  - Flow:
-'      1) Read RAW_RENT_ROLL → TSV → chunk → LLM extract (pipe CSV)
-'      2) Write extracted rows to RENT_ROLL_EXTRACTED_WO_CONCESSIONS
-'      3) LEFT JOIN with CONCESSIONS on Unit → write to output
-'
 Option Explicit
 
 ' ==========================
 ' Configuration
 ' ==========================
 Private Const GEMINI_ENDPOINT As String = "https://your-enterprise-gateway.example.com/v1/models/gemini-2.5-flash:generateContent"
+Private Const MODEL_NAME As String = "gemini-2.5-flash"
 Private Const ROWS_PER_CHUNK As Long = 150
 Private Const OUTPUT_SHEET_NAME As String = "output"
-Private Const INTERMEDIATE_SHEET_NAME As String = "RENT_ROLL_EXTRACTED_WO_CONCESSIONS"
-Private Const SECRETS_SHEET As String = "__secrets"   ' A1 must contain the bearer token
+Private Const EXTRACT_SHEET_NAME As String = "RENT_ROLL_EXTRACTED_WO_CONCESSIONS"
+Private Const SECRETS_SHEET As String = "__secrets"
+Private Const SECRETS_TOKEN_CELL As String = "A1"
 
 ' ==========================
 ' Entry Point
@@ -22,69 +17,114 @@ Private Const SECRETS_SHEET As String = "__secrets"   ' A1 must contain the bear
 Public Sub ExtractRentRollPipeline()
     On Error GoTo EH
 
-    Dim wsRR As Worksheet, wsC As Worksheet
-    Set wsRR = ThisWorkbook.Worksheets("RAW_RENT_ROLL")
-    Set wsC = ThisWorkbook.Worksheets("CONCESSIONS")
+    Dim wsRR As Worksheet
+    Set wsRR = RequireSheet("RAW_RENT_ROLL")
 
-    ' Remove old output/intermediate sheets if present
-    SafeDeleteSheet OUTPUT_SHEET_NAME
-    SafeDeleteSheet INTERMEDIATE_SHEET_NAME
+    Dim wsExtract As Worksheet, wsOut As Worksheet, wsC As Worksheet
+    Dim concessionsAvailable As Boolean
+    concessionsAvailable = False
+    If SheetExists("CONCESSIONS") Then
+        Set wsC = ThisWorkbook.Worksheets("CONCESSIONS")
+        concessionsAvailable = Not IsSheetEffectivelyEmpty(wsC)
+    End If
 
-    ' Create intermediate & output sheets
-    Dim wsMid As Worksheet, wsOut As Worksheet
-    Set wsMid = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
-    wsMid.Name = INTERMEDIATE_SHEET_NAME
-    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
-    wsOut.Name = OUTPUT_SHEET_NAME
+    ' (Re)create extract and (maybe) output sheets
+    KillSheetIfExists EXTRACT_SHEET_NAME
+    Set wsExtract = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wsExtract.Name = EXTRACT_SHEET_NAME
 
-    ' 1) Read rent roll as TSV (auto-detect headers)
-    Dim rrData As String, headerRow As Long
+    KillSheetIfExists OUTPUT_SHEET_NAME
+    If concessionsAvailable Then
+        Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        wsOut.Name = OUTPUT_SHEET_NAME
+    End If
+
+    ' 1) Detect header in RAW_RENT_ROLL and read as TSV
+    Dim headerRow As Long
     headerRow = DetectHeaderRow(wsRR, Array("Unit", "Rent", "Status"))
     If headerRow = 0 Then headerRow = 1
-    rrData = RangeToTSV(wsRR, headerRow)
 
-    ' 2) Chunk → call Gemini → aggregate CSV rows
-    Dim chunks As Collection: Set chunks = ChunkTSV(rrData, ROWS_PER_CHUNK)
-    Dim allCsv As String, i As Long, csvChunk As String
-    allCsv = ""
+    Dim rrTSV As String
+    rrTSV = RangeToTSV(wsRR, headerRow)
+
+    ' 2) Chunk → call Gemini → aggregate CSV
+    Dim chunks As Collection: Set chunks = ChunkTSV(rrTSV, ROWS_PER_CHUNK)
+    Dim allCsv As String, i As Long
     For i = 1 To chunks.Count
+        Dim csvChunk As String
         csvChunk = CallGeminiExtract(chunks(i))
         If Len(allCsv) = 0 Then
             allCsv = csvChunk
         Else
-            allCsv = AppendCsv(allCsv, csvChunk) ' skip repeating header
+            allCsv = AppendCsv(allCsv, csvChunk)
         End If
         DoEvents
     Next i
 
-    ' 3) Write the extracted CSV to the INTERMEDIATE sheet
-    WriteCSVToSheet allCsv, wsMid, 1, 1
+    ' 3) Write extracted CSV to the EXTRACT sheet
+    WriteCSVToSheet allCsv, wsExtract, 1, 1
 
-    ' 4) LEFT JOIN: INTERMEDIATE (by Unit) with CONCESSIONS → OUTPUT
-    PerformConcessionsJoin wsMid, wsC, wsOut
+    ' 4) If no concessions, stop here with a popup
+    If Not concessionsAvailable Then
+        MsgBox "CONCESSIONS tab is missing or empty. Wrote intermediate results to '" & EXTRACT_SHEET_NAME & "'.", vbInformation
+        Exit Sub
+    End If
 
-    ' 5) Sanity checks on OUTPUT
+    ' 5) LEFT JOIN concessions onto extract → output
     Dim unitCol As Long, rentCol As Long, statusCol As Long
-    unitCol = FindHeaderColumn(wsOut, "Unit")
+    unitCol = FindHeaderColumn(wsExtract, "Unit")
+    rentCol = FindHeaderColumn(wsExtract, "Rent")
+    statusCol = FindHeaderColumn(wsExtract, "Status")
+
+    If unitCol = 0 Then Err.Raise vbObjectError + 201, , "Intermediate extract is missing 'Unit' column."
+
+    Dim concMap As Object: Set concMap = CreateObject("Scripting.Dictionary")
+    LoadConcessionsMap wsC, concMap
+
+    ' Copy extract table to output first
+    wsOut.Cells.Clear
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsExtract.Cells(wsExtract.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsExtract.Cells(1, wsExtract.Columns.Count).End(xlToLeft).Column
+    wsExtract.Range(wsExtract.Cells(1, 1), wsExtract.Cells(lastRow, lastCol)).Copy Destination:=wsOut.Cells(1, 1)
+
+    ' Add is_concession + concession_amount
+    Dim addCol1 As Long, addCol2 As Long
+    addCol1 = lastCol + 1
+    addCol2 = lastCol + 2
+    wsOut.Cells(1, addCol1).Value = "is_concession"
+    wsOut.Cells(1, addCol2).Value = "concession_amount"
+
+    Dim r As Long, u As String, amt As Double
+    For r = 2 To lastRow
+        u = CStr(wsOut.Cells(r, unitCol).Value)
+        If concMap.Exists(u) Then
+            wsOut.Cells(r, addCol1).Value = True
+            amt = CDbl(concMap(u))
+            wsOut.Cells(r, addCol2).Value = amt
+        Else
+            wsOut.Cells(r, addCol1).Value = False
+            wsOut.Cells(r, addCol2).Value = 0
+        End If
+    Next r
+
+    ' Sanity checks (optional but handy)
     rentCol = FindHeaderColumn(wsOut, "Rent")
     statusCol = FindHeaderColumn(wsOut, "Status")
-
     Dim totalRent As Double, nOcc As Long, nVac As Long
     totalRent = SumColumn(wsOut, rentCol)
     nOcc = CountByValue(wsOut, statusCol, "Occupied")
     nVac = CountByValue(wsOut, statusCol, "Vacant")
 
-    Dim lastRow As Long
-    lastRow = wsOut.Cells(wsOut.Rows.Count, 1).End(xlUp).Row
-    wsOut.Cells(lastRow + 2, 1).Value = "Sanity Check Summary"
-    wsOut.Cells(lastRow + 3, 1).Value = "Total Rent"
-    wsOut.Cells(lastRow + 3, 2).Value = totalRent
-    wsOut.Cells(lastRow + 4, 1).Value = "# Occupied"
-    wsOut.Cells(lastRow + 4, 2).Value = nOcc
-    wsOut.Cells(lastRow + 5, 1).Value = "# Vacant"
-    wsOut.Cells(lastRow + 5, 2).Value = nVac
+    Dim tailRow As Long: tailRow = wsOut.Cells(wsOut.Rows.Count, 1).End(xlUp).Row + 2
+    wsOut.Cells(tailRow, 1).Value = "Sanity Check Summary"
+    wsOut.Cells(tailRow + 1, 1).Value = "Total Rent": wsOut.Cells(tailRow + 1, 2).Value = totalRent
+    wsOut.Cells(tailRow + 2, 1).Value = "# Occupied": wsOut.Cells(tailRow + 2, 2).Value = nOcc
+    wsOut.Cells(tailRow + 3, 1).Value = "# Vacant": wsOut.Cells(tailRow + 3, 2).Value = nVac
 
-    MsgBox "Done. Intermediate written to '" & INTERMEDIATE_SHEET_NAME & "' and final output to '" & OUTPUT_SHEET_NAME & "'.", vbInformation
+    MsgBox "Pipeline complete." & vbCrLf & _
+           "Intermediate: '" & EXTRACT_SHEET_NAME & "'" & vbCrLf & _
+           "Final joined output: '" & OUTPUT_SHEET_NAME & "'", vbInformation
     Exit Sub
 
 EH:
@@ -92,48 +132,37 @@ EH:
 End Sub
 
 ' ==========================
-' Join step (INTERMEDIATE + CONCESSIONS → OUTPUT)
+' Sheet helpers
 ' ==========================
-Private Sub PerformConcessionsJoin(wsMid As Worksheet, wsC As Worksheet, wsOut As Worksheet)
-    Dim unitColMid As Long, rentColMid As Long, statusColMid As Long
-    unitColMid = FindHeaderColumn(wsMid, "Unit")
-    rentColMid = FindHeaderColumn(wsMid, "Rent")
-    statusColMid = FindHeaderColumn(wsMid, "Status")
+Private Function RequireSheet(name As String) As Worksheet
+    If Not SheetExists(name) Then Err.Raise vbObjectError + 301, , "Required sheet '" & name & "' not found."
+    Set RequireSheet = ThisWorkbook.Worksheets(name)
+End Function
 
-    If unitColMid = 0 Then Err.Raise vbObjectError + 201, , "Intermediate sheet missing 'Unit' column."
+Private Function SheetExists(name As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not ThisWorkbook.Worksheets(name) Is Nothing
+    On Error GoTo 0
+End Function
 
-    ' Copy INTERMEDIATE table headers to OUTPUT
-    Dim lastColMid As Long, lastRowMid As Long
-    lastColMid = wsMid.Cells(1, wsMid.Columns.Count).End(xlToLeft).Column
-    lastRowMid = wsMid.Cells(wsMid.Rows.Count, unitColMid).End(xlUp).Row
-
-    wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(lastRowMid, lastColMid)).Value = _
-        wsMid.Range(wsMid.Cells(1, 1), wsMid.Cells(lastRowMid, lastColMid)).Value
-
-    ' Add join columns
-    Dim lastColOut As Long
-    lastColOut = wsOut.Cells(1, wsOut.Columns.Count).End(xlToLeft).Column
-    wsOut.Cells(1, lastColOut + 1).Value = "is_concession"
-    wsOut.Cells(1, lastColOut + 2).Value = "concession_amount"
-
-    ' Build concessions dictionary
-    Dim concMap As Object: Set concMap = CreateObject("Scripting.Dictionary")
-    LoadConcessionsMap wsC, concMap
-
-    ' Fill join columns
-    Dim r As Long, u As String, amt As Double
-    For r = 2 To lastRowMid
-        u = CStr(wsOut.Cells(r, unitColMid).Value)
-        If Len(u) > 0 And concMap.Exists(u) Then
-            wsOut.Cells(r, lastColOut + 1).Value = True
-            amt = CDbl(concMap(u))
-            wsOut.Cells(r, lastColOut + 2).Value = amt
-        Else
-            wsOut.Cells(r, lastColOut + 1).Value = False
-            wsOut.Cells(r, lastColOut + 2).Value = 0
-        End If
-    Next r
+Private Sub KillSheetIfExists(name As String)
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets(name).Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
 End Sub
+
+Private Function IsSheetEffectivelyEmpty(ws As Worksheet) As Boolean
+    If WorksheetFunction.CountA(ws.UsedRange) = 0 Then
+        IsSheetEffectivelyEmpty = True
+        Exit Function
+    End If
+    ' If only header row or no data under first column
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    IsSheetEffectivelyEmpty = (lastRow < 2)
+End Function
 
 ' ==========================
 ' Rent Roll → TSV helpers
@@ -199,18 +228,20 @@ Private Function ChunkTSV(tsv As String, rowsPerChunk As Long) As Collection
     End If
 
     Dim header As String: header = lines(0)
-    Dim startIdx As Long: startIdx = 1
+    Dim i As Long, startIdx As Long, cnt As Long
     Dim col As New Collection
 
+    startIdx = 1
     Do While startIdx < UBound(lines) + 1
-        Dim cnt As Long
         cnt = WorksheetFunction.Min(rowsPerChunk, UBound(lines) - startIdx + 1)
         If cnt <= 0 Then Exit Do
+
         Dim chunk As String
         chunk = header & vbCrLf & Join(Slice(lines, startIdx, cnt), vbCrLf)
         col.Add chunk
         startIdx = startIdx + cnt
     Loop
+
     Set ChunkTSV = col
 End Function
 
@@ -225,12 +256,17 @@ Private Function Slice(arr() As String, startIdx As Long, count As Long) As Stri
 End Function
 
 ' ==========================
-' Gemini Call (2.5 Flash)
+' Gemini Call (2.5-Flash)
 ' ==========================
 Private Function CallGeminiExtract(tsvChunk As String) As String
-    Dim prompt As String: prompt = BuildPrompt()
-    Dim bearer As String: bearer = GetBearerToken()
-    Dim body As String: body = BuildGeminiBody(prompt, tsvChunk)
+    Dim prompt As String
+    prompt = BuildPrompt()
+
+    Dim bearer As String
+    bearer = GetBearerToken()
+
+    Dim body As String
+    body = BuildGeminiBody(prompt, tsvChunk)
 
     Dim resp As String
     resp = HttpPostJson(GEMINI_ENDPOINT, bearer, body)
@@ -239,7 +275,6 @@ Private Function CallGeminiExtract(tsvChunk As String) As String
     csvOut = ExtractTextFromGeminiResponse(resp)
     csvOut = ExtractCSVBlock(csvOut)
 
-    If Len(csvOut) = 0 Then Err.Raise vbObjectError + 301, , "Empty CSV block from model."
     CallGeminiExtract = csvOut
 End Function
 
@@ -247,19 +282,18 @@ Private Function BuildPrompt() As String
     Dim p As String
     p = p & "You are extracting structured rows from a rent roll table." & vbLf
     p = p & "INPUT FORMAT: tab-separated values (TSV) with a header row and data rows." & vbLf
-    p = p & "TASK: For each input row (one unit), produce one output row with columns EXACTLY:" & vbLf
+    p = p & "TASK: For each input row (one unit), produce one output row with the following columns EXACTLY in this order:" & vbLf
     p = p & "Unit|Status|Rent" & vbLf
     p = p & "— Unit: the unit identifier as shown (string)." & vbLf
     p = p & "— Status: 'Occupied' or 'Vacant'. If unclear, infer from context words (e.g., 'Current Resident' implies Occupied)." & vbLf
-    p = p & "— Rent: scheduled/base monthly rent as a number (no currency symbols). Use 0 if missing." & vbLf
+    p = p & "— Rent: scheduled/base monthly rent as a number (no currency symbols). Use 0 if truly missing." & vbLf
     p = p & "OUTPUT FORMAT: Return ONLY a single pipe-delimited CSV block with header in the first row, like:" & vbLf
-    p = p & "Unit|Status|Rent" & vbLf
-    p = p & "101|Occupied|2350" & vbLf
+    p = p & "Unit|Status|Rent" & vbLf & "101|Occupied|2350" & vbLf & "..." & vbLf
     p = p & "STRICT RULES:" & vbLf
     p = p & "1) Use '|' as the delimiter." & vbLf
     p = p & "2) No explanations outside the CSV." & vbLf
     p = p & "3) If a row is a section header or subtotal, skip it." & vbLf
-    p = p & "4) Convert any currency strings to bare numbers." & vbLf
+    p = p & "4) Convert any currency strings to bare numbers."
     BuildPrompt = p
 End Function
 
@@ -272,50 +306,55 @@ Private Function BuildGeminiBody(prompt As String, tsv As String) As String
 End Function
 
 Private Function GetBearerToken() As String
-    On Error GoTo EH
-    Dim ws As Worksheet
-    Set ws = ThisWorkbook.Worksheets(SECRETS_SHEET)
+    If Not SheetExists(SECRETS_SHEET) Then _
+        Err.Raise vbObjectError + 401, , "Secrets sheet '" & SECRETS_SHEET & "' not found."
     Dim tok As String
-    tok = Trim$(CStr(ws.Range("A1").Value))
-    If Len(tok) = 0 Then Err.Raise vbObjectError + 102, , _
-        "Bearer token not found in sheet '" & SECRETS_SHEET & "' cell A1."
+    tok = Trim$(CStr(ThisWorkbook.Worksheets(SECRETS_SHEET).Range(SECRETS_TOKEN_CELL).Value))
+    If Len(tok) = 0 Then Err.Raise vbObjectError + 402, , "'" & SECRETS_SHEET & "!" & SECRETS_TOKEN_CELL & "' is empty. Paste GEMINI_BEARER there."
     GetBearerToken = tok
-    Exit Function
-EH:
-    Err.Raise vbObjectError + 102, , "Cannot read bearer token: " & Err.Description
 End Function
 
 Private Function HttpPostJson(url As String, bearer As String, body As String) As String
-    Dim http As Object: Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    Dim http As Object
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+
     http.Open "POST", url, False
     http.SetRequestHeader "Content-Type", "application/json"
     If Len(bearer) > 0 Then http.SetRequestHeader "Authorization", "Bearer " & bearer
     http.Send body
 
-    Dim status As Long: status = http.Status
+    Dim status As Long
+    status = http.Status
     If status < 200 Or status >= 300 Then
-        Err.Raise vbObjectError + 103, , "HTTP error " & status & ": " & http.ResponseText
+        Err.Raise vbObjectError + 403, , "HTTP error " & status & ": " & http.ResponseText
     End If
+
     HttpPostJson = http.ResponseText
 End Function
 
 Private Function ExtractTextFromGeminiResponse(resp As String) As String
-    ' Extract concatenated .text fields from candidates[0].content.parts[*].text
-    Dim out As String: out = ""
-    Dim pos As Long, startPos As Long, endPos As Long
+    ' Greedy extraction of all "text":"..." parts (Vertex-style response)
+    Dim out As String, pos As Long, startPos As Long, endPos As Long
     pos = 1
     Do
         pos = InStr(pos, resp, """text"":""")
         If pos = 0 Then Exit Do
         startPos = pos + Len("""text"":""")
-        endPos = InStr(startPos, resp, """")
-        If endPos = 0 Then Exit Do
-
+        endPos = startPos
+        Do While endPos <= Len(resp)
+            If Mid$(resp, endPos, 2) = "\"" Then
+                endPos = endPos + 2
+            ElseIf Mid$(resp, endPos, 1) = """" Then
+                Exit Do
+            Else
+                endPos = endPos + 1
+            End If
+        Loop
         Dim piece As String
         piece = Mid$(resp, startPos, endPos - startPos)
-        piece = Replace(piece, "\\n", vbCrLf)
-        piece = Replace(piece, "\\\"", """")
-        piece = Replace(piece, "\\t", vbTab)
+        piece = Replace(piece, "\n", vbCrLf)
+        piece = Replace(piece, "\\", "\")
+        piece = Replace(piece, "\"" , """")
         out = out & piece & vbCrLf
         pos = endPos + 1
     Loop
@@ -323,26 +362,22 @@ Private Function ExtractTextFromGeminiResponse(resp As String) As String
 End Function
 
 Private Function ExtractCSVBlock(modelText As String) As String
-    Dim lines() As String: lines = Split(modelText, vbCrLf)
+    Dim lines() As String
+    lines = Split(modelText, vbCrLf)
     Dim i As Long, keeper As String
     For i = LBound(lines) To UBound(lines)
-        If InStr(lines(i), "|") > 0 Then
-            keeper = keeper & lines(i) & vbCrLf
-        End If
+        If InStr(lines(i), "|") > 0 Then keeper = keeper & lines(i) & vbCrLf
     Next i
     ExtractCSVBlock = Trim$(keeper)
 End Function
 
 Private Function AppendCsv(existingCsv As String, newCsv As String) As String
-    Dim exLines() As String, newLines() As String
-    exLines = Split(existingCsv, vbCrLf)
+    Dim newLines() As String
     newLines = Split(newCsv, vbCrLf)
-
-    Dim i As Long, sb As String: sb = existingCsv
+    Dim i As Long, sb As String
+    sb = existingCsv
     For i = 1 To UBound(newLines) ' skip header
-        If Len(Trim$(newLines(i))) > 0 Then
-            sb = sb & vbCrLf & newLines(i)
-        End If
+        If Len(Trim$(newLines(i))) > 0 Then sb = sb & vbCrLf & newLines(i)
     Next i
     AppendCsv = sb
 End Function
@@ -351,15 +386,15 @@ End Function
 ' CSV → Sheet helpers
 ' ==========================
 Private Sub WriteCSVToSheet(csvText As String, ws As Worksheet, startRow As Long, startCol As Long)
-    Dim lines() As String: lines = Split(csvText, vbCrLf)
-    Dim r As Long, c As Long, parts() As String
+    Dim lines() As String, parts() As String
+    lines = Split(csvText, vbCrLf)
+    Dim r As Long, c As Long
     For r = 0 To UBound(lines)
         parts = Split(lines(r), "|")
         For c = 0 To UBound(parts)
             ws.Cells(startRow + r, startCol + c).Value = parts(c)
         Next c
     Next r
-    ws.Columns.AutoFit
 End Sub
 
 Private Function FindHeaderColumn(ws As Worksheet, headerName As String) As Long
@@ -375,15 +410,14 @@ Private Function FindHeaderColumn(ws As Worksheet, headerName As String) As Long
 End Function
 
 ' ==========================
-' Concessions helpers
+' Concessions → Map and Join
 ' ==========================
 Private Sub LoadConcessionsMap(ws As Worksheet, ByRef m As Object)
-    ' Expect headers in row 1 with at least: Unit, and amount under any of these headers
     Dim unitCol As Long, amtCol As Long
     unitCol = LocateHeader(ws, Array("Unit"))
     amtCol = LocateHeader(ws, Array("concession_amount", "Amount", "Concession", "Concession Amount"))
     If unitCol = 0 Or amtCol = 0 Then
-        Err.Raise vbObjectError + 104, , "CONCESSIONS sheet missing Unit/Amount columns."
+        Err.Raise vbObjectError + 501, , "CONCESSIONS sheet missing 'Unit' and/or 'Amount' column."
     End If
 
     Dim lastRow As Long, r As Long
@@ -394,11 +428,7 @@ Private Sub LoadConcessionsMap(ws As Worksheet, ByRef m As Object)
         u = CStr(ws.Cells(r, unitCol).Value)
         a = ws.Cells(r, amtCol).Value
         If Len(u) > 0 Then
-            If Not m.Exists(u) Then
-                m.Add u, CDbl(Val(a))
-            Else
-                m(u) = CDbl(Val(a)) ' last one wins
-            End If
+            If Not m.Exists(u) Then m.Add u, CDbl(Val(a)) Else m(u) = CDbl(Val(a))
         End If
     Next r
 End Sub
@@ -446,14 +476,6 @@ End Function
 ' ==========================
 ' Utilities
 ' ==========================
-Private Sub SafeDeleteSheet(sheetName As String)
-    On Error Resume Next
-    Application.DisplayAlerts = False
-    ThisWorkbook.Worksheets(sheetName).Delete
-    Application.DisplayAlerts = True
-    On Error GoTo 0
-End Sub
-
 Private Function EscapeJson(s As String) As String
     Dim t As String
     t = Replace(s, "\", "\\")

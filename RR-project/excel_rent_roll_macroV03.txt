@@ -570,6 +570,46 @@ Private Sub SafeSetSheetName(ws As Worksheet, desired As String)
     On Error GoTo 0
 End Sub
 
+' Append newCsv to existingCsv, skipping the header row in newCsv if present.
+Private Function AppendCsv(existingCsv As String, newCsv As String) As String
+    Dim ex As String: ex = Trim$(existingCsv)
+    Dim nw As String: nw = Trim$(newCsv)
+    If Len(nw) = 0 Then
+        AppendCsv = ex
+        Exit Function
+    End If
+    If Len(ex) = 0 Then
+        AppendCsv = nw
+        Exit Function
+    End If
+
+    Dim exLines() As String, nwLines() As String
+    exLines = Split(ex, vbCrLf)
+    nwLines = Split(nw, vbCrLf)
+
+    Dim headerExisting As String, headerNew As String
+    headerExisting = LCase$(Trim$(exLines(0)))
+    headerNew = LCase$(Trim$(nwLines(0)))
+
+    Dim startIdx As Long: startIdx = 0
+    ' If the new chunk's first line looks like the same header, skip it.
+    If headerExisting = headerNew _
+       Or InStr(headerNew, "unit|status|rent") > 0 Then
+        startIdx = 1
+    End If
+
+    Dim i As Long, sb As String
+    sb = ex
+    For i = startIdx To UBound(nwLines)
+        If Len(Trim$(nwLines(i))) > 0 Then
+            sb = sb & vbCrLf & nwLines(i)
+        End If
+    Next i
+
+    AppendCsv = sb
+End Function
+
+
 ' ==========================
 ' Misc
 ' ==========================

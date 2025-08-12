@@ -3,30 +3,42 @@ Private Const DEBUG_DUMP As Boolean = True   ' set False when done
 
 'Add this helper to capture what’s happening at each stage:
 Private Sub DebugDump(stage As String, payload As String, Optional chunkIdx As Long = 0)
-    If Not DEBUG_DUMP Then Exit Sub
-    Dim ws As Worksheet
-    If Not SheetExists("DEBUG_GEMINI") Then
+    Const DBG As String = "DEBUG_GEMINI"
+    Dim ws As Worksheet, lo As ListObject, lr As ListRow
+
+    If Not SheetExists(DBG) Then
         Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
-        ws.Name = "DEBUG_GEMINI"
+        ws.Name = DBG
         ws.Range("A1:D1").Value = Array("Timestamp", "Stage", "ChunkIdx", "Snippet")
-        ws.Columns("A:D").ColumnWidth = 40
+        Set lo = ws.ListObjects.Add(xlSrcRange, ws.Range("A1:D1"), , xlYes)
+        lo.TableStyle = "TableStyleLight9"
+        ws.Columns("A:D").ColumnWidth = 36
+        ws.Columns("D:D").WrapText = True
     Else
-        Set ws = ThisWorkbook.Worksheets("DEBUG_GEMINI")
+        Set ws = ThisWorkbook.Worksheets(DBG)
+        If ws.ListObjects.Count = 0 Then
+            ' convert header row to a table if user deleted it
+            Set lo = ws.ListObjects.Add(xlSrcRange, ws.Range("A1").CurrentRegion, , xlYes)
+        Else
+            Set lo = ws.ListObjects(1)
+        End If
     End If
-    Dim r As Long: r = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row + 1
-    ws.Cells(r, 1).Value = Now
-    ws.Cells(r, 2).Value = stage
-    ws.Cells(r, 3).Value = chunkIdx
-    ws.Cells(r, 4).Value = Left$(payload, 32760) ' keep it small for Excel cell
+
+    Set lr = lo.ListRows.Add
+    lr.Range.Cells(1, 1).Value = Now
+    lr.Range.Cells(1, 2).Value = stage
+    lr.Range.Cells(1, 3).Value = chunkIdx
+    lr.Range.Cells(1, 4).Value = Left$(payload, 32760)
 End Sub
+
 
 
 '2) Make sure TSV isn’t empty (and log it)
 rrTSV = RangeToTSV(wsRR, headerRow)
-DebugDump "TSV_BUILT", rrTSV, 0
-If Len(Trim$(rrTSV)) = 0 Then
-    MsgBox "RAW_RENT_ROLL TSV is empty. Check header detection and that the sheet has data under headers.", vbExclamation
+DebugDump "TSV_BUILT", "len=" & Len(rrTSV) & vbCrLf & Left$(rrTSV, 1000), 0
+
+If Len(rrTSV) = 0 Or InStr(rrTSV, vbCrLf) = 0 Then
+    MsgBox "RAW_RENT_ROLL TSV looks empty or header-only. Check header detection.", vbExclamation
     Exit Sub
 End If
-
 

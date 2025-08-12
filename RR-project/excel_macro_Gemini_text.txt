@@ -1,0 +1,17 @@
+Public Sub TestGeminiConnection()
+    On Error GoTo EH
+    Dim bearer As String: bearer = GetBearerToken()
+    Dim body As String
+    body = "{""contents"":[{""role"":""user"",""parts"":[{""text"":""ping""}]}],""generationConfig"":{""temperature"":0}}"
+
+    Dim resp As String
+    resp = HttpPostJson( _
+        "https://your-enterprise-gateway.example.com/v1/models/gemini-2.5-flash:generateContent", _
+        bearer, body)
+
+    Debug.Print "OK. First 300 chars of response:", Left$(resp, 300)
+    MsgBox "Gemini connectivity OK.", vbInformation
+    Exit Sub
+EH:
+    MsgBox "TestGeminiConnection failed: " & Err.Description, vbCritical
+End Sub

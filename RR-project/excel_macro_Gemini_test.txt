@@ -1,3 +1,70 @@
+Private Function HttpPostJson(url As String, bearer As String, body As String) As String
+    Const MAX_RETRIES As Long = 3
+    Const BACKOFF_MS As Long = 1500            ' base backoff
+    Dim attempt As Long
+
+    For attempt = 1 To MAX_RETRIES
+        Dim http As Object
+        Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+
+        On Error Resume Next
+        http.Open "POST", url, False
+
+        ' Timeouts: resolve, connect, send, receive (ms)
+        ' Increase receive timeout because LLMs can take a bit.
+        http.SetTimeouts 60000, 60000, 60000, 180000
+
+        ' Force modern TLS (some environments default too low)
+        ' Option 9 = WinHttpRequestOption_SecureProtocols
+        ' 0x00000200 = TLS 1.2, 0x00000800 = TLS 1.3 (if available)
+        http.Option(9) = &H200 Or &H800
+
+        http.SetRequestHeader "Content-Type", "application/json"
+        http.SetRequestHeader "Accept", "application/json"
+        If Len(bearer) > 0 Then http.SetRequestHeader "Authorization", "Bearer " & bearer
+
+        http.Send body
+
+        Dim status As Long
+        If Err.Number <> 0 Then
+            ' Transport-level error (e.g., timeout)
+            Debug.Print "[HTTP attempt " & attempt & "] transport error: " & Err.Description
+            Err.Clear
+        Else
+            status = http.Status
+            If status >= 200 And status < 300 Then
+                HttpPostJson = http.ResponseText
+                Exit Function
+            Else
+                Debug.Print "[HTTP attempt " & attempt & "] status " & status & ": " & Left$(http.ResponseText, 500)
+                ' Retry on 429/5xx; fail fast on 4xx (except 429)
+                If Not (status = 429 Or (status >= 500 And status < 600)) Then
+                    Err.Raise vbObjectError + 403, , "HTTP error " & status & ": " & http.ResponseText
+                End If
+            End If
+        End If
+        On Error GoTo 0
+
+        ' Exponential backoff
+        Dim waitMs As Long
+        waitMs = BACKOFF_MS * (2 ^ (attempt - 1))
+        SleepMs waitMs
+    Next attempt
+
+    Err.Raise vbObjectError + 403, , "HTTP error/timeout after " & MAX_RETRIES & " attempts."
+End Function
+
+' Simple sleep helper
+Private Sub SleepMs(ms As Long)
+    Dim t As Single: t = Timer
+    Do While (Timer - t) * 1000 < ms
+        DoEvents
+    Loop
+End Sub
+
+
+
+
 Public Sub TestGeminiConnection()
     On Error GoTo EH
     Dim bearer As String: bearer = GetBearerToken()

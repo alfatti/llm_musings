@@ -1,0 +1,166 @@
+# Create a text file with a reusable VLM prompt template + few-shot placeholders
+content = r"""
+RENT ROLL VLM EXTRACTION — BASE PROMPT WITH FEW-SHOT PLACEHOLDERS
+=================================================================
+
+# SYSTEM / TASK
+You are extracting structured data from a rent roll page image. The table may be irregular:
+- Units are grouped under **mid-header rows** that indicate the **Property** name (e.g., a row spanning columns or with a “Property:” label).
+- Each **Unit** often has multiple (Charge Type, Amount) pairs (e.g., Rent, Garbage, Pet) listed in two columns.
+- Column names and order may vary across pages.
+
+Your job:
+1) **Assign the correct Property** to every unit by carrying down the closest preceding mid-header “Property” row until the next one appears.  
+2) **Extract per-unit charges** and normalize them.  
+3) Output **clean JSON** following the schema below.  
+4) **No explanations or commentary**—return JSON only.
+
+# KEY RULES
+- **Detect Property mid-headers**: If a row is a group header (e.g., merged cells, “Property”, bold, or row that does not contain a valid Unit), treat it as `current_property`. Apply `current_property` to all subsequent Unit rows until another header appears.
+- **Unit identification**: A Unit row typically has a unit identifier (e.g., “101”, “A1”, “LW-1”).
+- **Charges normalization**:
+  - Parse the two columns “Charge Type(s)” and “Amount(s)”, which may appear as multiple rows under the same Unit or concatenated in the same row.
+  - Map each distinct charge type to its numeric amount **for that unit**.
+  - Because charge types vary by unit, put them in a **dictionary** under `charges`.
+  - Additionally, provide a **flattened view** under `charges_flat` where keys are safe column names derived from the charge types (uppercase snake case; non-alphanumeric → `_`; collapse repeats). Missing charge types for a unit: set to `null`.
+- **Do not hallucinate**. If a field is not visible, use `null`.
+- Monetary values: numeric (no currency symbols or commas).
+- Dates: `YYYY-MM-DD` if fully inferable; else `null`.
+- Return **an array of JSON objects**—one per Unit row.
+- If the page has no units, return `[]`.
+
+# OUTPUT SCHEMA (per unit object)
+{
+  "property": string | null,                 // carried from the nearest preceding mid-header
+  "unit": string | null,                     // e.g., "101", "A1", "LW-1"
+  "resident_name": string | null,            // if present
+  "status": string | null,                   // e.g., "Occupied", "Vacant"
+  "floor_plan": string | null,               // or "unit_type" if present (bed/bath labels ok)
+  "sqft": number | null,
+  "bedrooms": number | null,
+  "bathrooms": number | null,
+  "lease_start": "YYYY-MM-DD" | null,
+  "lease_end": "YYYY-MM-DD" | null,
+  "market_rent": number | null,              // numeric only
+  "scheduled_rent": number | null,           // numeric only
+  "balance": number | null,                  // past due if present
+  "charges": { [charge_type: string]: number },  // e.g., { "Rent": 1850, "Garbage": 25 }
+  "charges_flat": { [normalized_key: string]: number | null }, // e.g., { "RENT": 1850, "GARBAGE": 25, "PET": null }
+  "total_charges": number | null,            // sum of all amounts in `charges` (if visible/inferable)
+  "total_monthly": number | null,            // scheduled_rent + total_charges when that’s what the table shows; else null
+  "notes": string | null                     // any inline remarks in the row (not free commentary)
+}
+
+# NORMALIZATION DETAILS
+- **Detecting Property rows**: A row is a mid-header if it (a) lacks a valid Unit, (b) contains “Property” or a building name, or (c) spans across columns or has header styling. Use your best judgment to identify these.
+- **Charges parsing**:
+  - A Unit may list multiple charges as stacked rows beneath it or as delimited text in “Charge Type” and “Amount”.
+  - When repeated charge types appear for a Unit (e.g., two PET fees), sum them.
+  - Derive `charges_flat` keys by uppercasing `charges` keys, replacing non-alphanumeric with `_`, condensing repeats (`__` → `_`), and trimming `_` from ends.
+- **Numbers**: remove `$`, `,`, and whitespace. If a number can’t be read, set `null`.
+- **Dates**: Prefer ISO `YYYY-MM-DD` if fully specified; else `null`.
+
+# CONSTRAINTS
+- Output must be **valid JSON** (UTF-8), a **single array** of objects.
+- **No prose**, no markdown fences, no trailing commas.
+- Do not include any fields other than those in the schema.
+
+=================================================================
+FEW-SHOT EXAMPLES (replace placeholders with your data)
+=================================================================
+Provide zero or more examples to steer the model. Each example contains:
+- One **input image** of a rent roll page (or an image + an optional markdown table)
+- The **expected JSON output** for that page
+
+Delimit examples with explicit markers so they don’t leak into the final response.
+
+[BEGIN_EXAMPLES]
+
+[BEGIN_EXAMPLE 1]
+# INPUT_IMAGE (embed or reference the page image)
+<IMAGE_PLACEHOLDER_1>
+
+# OPTIONAL_MARKDOWN_TABLE (if you also provide a text rendering)
+<TABLE_MARKDOWN_PLACEHOLDER_1>
+
+# EXPECTED_JSON_OUTPUT
+<EXPECTED_JSON_PLACEHOLDER_1>
+[END_EXAMPLE 1]
+
+[BEGIN_EXAMPLE 2]
+# INPUT_IMAGE
+<IMAGE_PLACEHOLDER_2>
+
+# OPTIONAL_MARKDOWN_TABLE
+<TABLE_MARKDOWN_PLACEHOLDER_2>
+
+# EXPECTED_JSON_OUTPUT
+<EXPECTED_JSON_PLACEHOLDER_2>
+[END_EXAMPLE 2]
+
+[BEGIN_EXAMPLE 3]
+# INPUT_IMAGE
+<IMAGE_PLACEHOLDER_3>
+
+# OPTIONAL_MARKDOWN_TABLE
+<TABLE_MARKDOWN_PLACEHOLDER_3>
+
+# EXPECTED_JSON_OUTPUT
+<EXPECTED_JSON_PLACEHOLDER_3>
+[END_EXAMPLE 3]
+
+[END_EXAMPLES]
+
+-----------------------------------------------------------------
+PLACEHOLDER INSTRUCTIONS (how to fill in for your VLM payload)
+-----------------------------------------------------------------
+- <IMAGE_PLACEHOLDER_i>:
+  * If using REST with Gemini/other VLMs that accept inline bytes:
+    - Replace with your model’s image part, e.g.,
+      - For Gemini REST (parts):
+        {
+          "inline_data": {
+            "mime_type": "image/png",
+            "data": "<BASE64_OF_PAGE_IMAGE_i>"
+          }
+        }
+      - Or a URI reference, depending on your API.
+  * If your pipeline first produces markdown via OCR/table conversion, you can include both image and markdown table.
+
+- <TABLE_MARKDOWN_PLACEHOLDER_i> (optional):
+  * Paste the markdown table text (if available). Keep header rows intact even if split.
+
+- <EXPECTED_JSON_PLACEHOLDER_i>:
+  * Paste the exact JSON array (usually 1–N unit objects for that page). Ensure it conforms to the schema and constraints above.
+
+-----------------------------------------------------------------
+INFERENCE INPUT (the page you want extracted NOW)
+-----------------------------------------------------------------
+[BEGIN_INFERENCE_INPUT]
+# INPUT_IMAGE
+<IMAGE_PLACEHOLDER_TARGET>
+
+# OPTIONAL_MARKDOWN_TABLE
+<TABLE_MARKDOWN_PLACEHOLDER_TARGET>
+[END_INFERENCE_INPUT]
+
+-----------------------------------------------------------------
+VALIDATION CHECKS (the model must self-verify before returning)
+-----------------------------------------------------------------
+- JSON parses as a single array.
+- Each object has "unit" (string or null).
+- All numeric fields (including `charges` values) are numbers or null.
+- `charges_flat` keys are normalized (uppercase, non-alphanumeric → `_`, no leading/trailing `_`).
+- If no units detected, return [].
+
+-----------------------------------------------------------------
+RETURN
+-----------------------------------------------------------------
+Return **only** the JSON array for the INFERENCE INPUT. Do **not** include example outputs in the final answer.
+"""
+
+path = "/mnt/data/rentroll_vlm_prompt.txt"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(content)
+
+path

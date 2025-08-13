@@ -156,3 +156,49 @@ VALIDATION CHECKS (the model must self-verify before returning)
 RETURN
 -----------------------------------------------------------------
 Return **only** the JSON array for the INFERENCE INPUT. Do **not** include example outputs in the final answer.
+
+
+-----------------------------------------------------------------
+[
+  {
+    "property": "Maplewood Residences",
+    "unit": "101A",
+    "resident_name": "John Smith",
+    "status": "Occupied",
+    "floor_plan": "2BED/2BATH",
+    "sqft": 980,
+    "bedrooms": 2,
+    "bathrooms": 2,
+    "lease_start": "2025-01-15",
+    "lease_end": "2025-12-31",
+    "market_rent": 2100,
+    "scheduled_rent": 2050,
+    "balance": 150,
+    "charges": { "Rent": 2050, "Parking": 75, "Pet Fee": 35 },
+    "charges_flat": { "RENT": 2050, "PARKING": 75, "PET_FEE": 35, "GARBAGE": null },
+    "total_charges": 2160,
+    "total_monthly": 2160,
+    "notes": null
+  },
+  {
+    "property": "Maplewood Residences",
+    "unit": "102B",
+    "resident_name": "Mary Jones",
+    "status": "Vacant",
+    "floor_plan": "1BED/1BATH",
+    "sqft": 720,
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "lease_start": null,
+    "lease_end": null,
+    "market_rent": 1850,
+    "scheduled_rent": 1800,
+    "balance": 0,
+    "charges": { "Rent": 1800, "Garbage": 25 },
+    "charges_flat": { "RENT": 1800, "PARKING": null, "PET_FEE": null, "GARBAGE": 25 },
+    "total_charges": 1825,
+    "total_monthly": 1825,
+    "notes": "Needs cleaning before next occupancy"
+  }
+]
+

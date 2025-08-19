@@ -1,0 +1,59 @@
++----------------------------- Excel Workbook -----------------------------+
+|                                                                           |
+|   [RAW_RENT_ROLL] tab        [CONCESSIONS] tab (optional)                 |
+|                 \                    /                                    |
+|                  \                  /                                     |
+|                   \                /                                      |
+|                    v              v                                       |
+|             +-------------------------------+                             |
+|             |   VBA Orchestrator (macro)    |                             |
+|             +-------------------------------+                             |
+|                        | Export sheets as temp CSVs                       |
+|                        v                                                  |
+|             +-------------------------------+                             |
+|             |   Temp CSV Files (in OS tmp)  |                             |
+|             |   - raw_rent_roll.csv         |                             |
+|             |   - concessions.csv (opt)     |                             |
+|             +-------------------------------+                             |
+|                        | Call Python backend                              |
+|                        v                                                  |
++--------------------------------------------------------------------------+
+                         |
+                         v
+            +-------------------------------+
+            |      Python Pipeline (CLI)    |
+            +-------------------------------+
+            | 1. Load CSVs                  |
+            | 2. Gemini: normalize schema   |
+            | 3. Extract required columns   |
+            | 4. Join concessions (if any)  |
+            | 5. Validate, QC               |
+            | 6. Write output.csv           |
+            +-------------------------------+
+                         |
+                         v
++--------------------------------------------------------------------------+
+|             +-------------------------------+                            |
+|             |   VBA Orchestrator (resume)   |                            |
+|             +-------------------------------+                            |
+|                        | Import output.csv into new tab                  |
+|                        v                                                 |
+|             +-------------------------------+                            |
+|             |   RENT_ROLL_OUTPUT tab        | <-- Final usable data       |
+|             +-------------------------------+                            |
+|                        | Always write logs                               |
+|                        v                                                 |
+|             +-------------------------------+                            |
+|             |   PIPELINE_LOG tab            | <-- stdout, stderr, status |
+|             +-------------------------------+                            |
+|                                                                           |
++---------------------------------------------------------------------------+
+
+
+Key features:
+Excel stays the user UI; Python is the backend “engine.”
+VBA only shuttles data (export → call → import) and surfaces logs.
+Gemini handles messy/variable schemas so inputs can differ across properties.
+Output is always the same normalized tab: RENT_ROLL_OUTPUT.
+
+

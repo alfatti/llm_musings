@@ -1,0 +1,42 @@
+
+📂 Where the code lives
+VBA Macro (Excel side)
+Open your workbook.
+Press Alt + F11 → opens the VBA editor.
+Insert → Module → paste the full VBA code I gave you.
+In the constants at the very top, set:
+Private Const PYTHON_EXE As String = "C:\Users\<you>\miniconda3\python.exe"
+Private Const PIPELINE_SCRIPT As String = "C:\path\to\pipeline_cli.py"
+Make sure those point to your actual Python and script.
+Python pipeline (backend)
+Your existing Python/Gemini pipeline stays as-is.
+Just add a small wrapper script (pipeline_cli.py) so VBA can call it with arguments.
+Save this script somewhere permanent (e.g. C:\Users\<you>\rentroll_pipeline\pipeline_cli.py).
+
+
+=====================
+⚙️ What happens when you run it
+Excel user inputs
+User fills RAW_RENT_ROLL tab with the raw data.
+Optionally fills CONCESSIONS tab.
+Export step
+Macro saves each of those sheets as a temporary CSV in %TEMP%.
+Python call
+VBA runs:
+python pipeline_cli.py --rent-roll raw_rent_roll.csv --concessions concessions.csv --out output.csv
+Python script does:
+Call Gemini to normalize column names & extract rent roll schema.
+Join concessions if provided.
+Save output.csv.
+Import back
+VBA clears/creates a sheet RENT_ROLL_OUTPUT.
+It loads output.csv into this sheet.
+A PIPELINE_LOG tab is also created/updated with stdout/stderr from Python, so you can debug if anything fails.
+==========================
+▶️ How to run the macro
+Open Excel with your workbook.
+Make sure RAW_RENT_ROLL (and optionally CONCESSIONS) exist.
+Press Alt + F8 → choose Run_RentRoll_Pipeline → press Run.
+Wait for it to finish.
+If successful → results appear in a new RENT_ROLL_OUTPUT sheet.
+If failure → see PIPELINE_LOG.

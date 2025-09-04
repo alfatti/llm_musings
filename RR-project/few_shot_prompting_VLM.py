@@ -324,13 +324,17 @@ for i, (img_b64, csv_text) in enumerate(exemplars):
 
 
 # === Cell: Show exemplar images ===
+# === Cell: Show exemplar images (fixed) ===
 import base64
 from IPython.display import Image, display
 
 for i, (img_b64, csv_text) in enumerate(exemplars):
     print(f"\n=== EXEMPLAR {i} IMAGE ===")
     display(Image(data=base64.b64decode(img_b64)))
-    print(f"CSV (first 10 lines):\n{'\n'.join(csv_text.splitlines()[:10])}")
+    print("CSV (first 10 lines):")
+    preview = "\n".join(csv_text.splitlines()[:10])  # build outside the f-string
+    print(preview)
+
 
 # === Cell: Validate exemplar CSV headers ===
 import pandas as pd

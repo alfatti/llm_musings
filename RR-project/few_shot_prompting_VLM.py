@@ -49,8 +49,49 @@ QUALITY RULES
 """.strip()
 
 # === Cell 3: Helpers ===
-# === REPLACE in Cell 3 ===
-import pathlib, json, pandas as pd
+import io
+
+def _resize_png_if_needed(png_bytes: bytes, max_width: int = 1600) -> bytes:
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(png_bytes))
+        if im.width > max_width:
+            ratio = max_width / im.width
+            im = im.resize((max_width, int(im.height * ratio)))
+            out = io.BytesIO()
+            im.save(out, format="PNG")
+            return out.getvalue()
+        return png_bytes
+    except Exception:
+        return png_bytes
+
+def pdf_to_base64_pages(pdf_path: str, dpi: int = 200, max_width: int = 1600) -> List[str]:
+    """
+    Render ALL pages of a PDF to PNG (base64). Tries PyMuPDF; falls back to pdf2image.
+    Returns list of base64 strings, one per page.
+    """
+    pages_b64 = []
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(pdf_path)
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        for i in range(len(doc)):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            png = pix.tobytes("png")
+            png = _resize_png_if_needed(png, max_width=max_width)
+            pages_b64.append(base64.b64encode(png).decode("utf-8"))
+    except Exception:
+        # fallback to pdf2image
+        from pdf2image import convert_from_path
+        images = convert_from_path(pdf_path, dpi=dpi)
+        for im in images:
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            png = _resize_png_if_needed(buf.getvalue(), max_width=max_width)
+            pages_b64.append(base64.b64encode(png).decode("utf-8"))
+    return pages_b64
 
 def read_table_file(file_path: str, sheet: Optional[object] = None) -> pd.DataFrame:
     """

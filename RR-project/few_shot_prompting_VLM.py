@@ -179,7 +179,7 @@ len(exemplars), "exemplars loaded"
 
 # === Cell 5: Gemini call helpers ===
 
-# === Cell 5 (fixed): Gemini call helpers — self-contained ===
+# === Cell 5 (Vertex AI version): Gemini call helpers — self-contained ===
 
 def _make_exemplar_turn(image_b64_png: str, gold_csv: str) -> tuple[dict, dict]:
     user = {
@@ -195,7 +195,7 @@ def _make_exemplar_turn(image_b64_png: str, gold_csv: str) -> tuple[dict, dict]:
 
 
 def _build_contents_for_page_inline(
-    exemplars: list[tuple[str, str]],  # list of (image_b64, csv)
+    exemplars: list[tuple[str, str]],
     instructions: str,
     page_image_b64: str
 ) -> list[dict]:
@@ -214,19 +214,38 @@ def _build_contents_for_page_inline(
     return contents
 
 
+def strip_code_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        # remove code fences if the model adds them
+        if t.startswith("```csv"):
+            t = t[len("```csv"):].strip()
+        elif t.startswith("```json"):
+            t = t[len("```json"):].strip()
+        elif t.startswith("```"):
+            t = t[len("```"):].strip()
+        if t.endswith("```"):
+            t = t[:-3].strip()
+    return t
+
+
 def gemini_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries: int = 3, backoff: float = 1.5) -> str:
     """
-    Calls Gemini once with provided contents; returns text (CSV expected).
-    Retries simple transient failures with exponential backoff.
+    Calls Vertex AI Gemini with OAuth Bearer token.
     """
-    headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEY}
+    bearer = get_bearer_token()
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {bearer}",
+    }
     body = {
         "contents": contents,
         "generationConfig": {
             "temperature": 0.0,
             "topP": 0.1,
             "maxOutputTokens": 4096,
-            # "responseMimeType": "text/csv",  # enable if your endpoint supports it
+            # If supported by your model/version, this helps:
+            # "responseMimeType": "text/csv",
         },
     }
 
@@ -234,6 +253,10 @@ def gemini_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
     for attempt in range(1, max_retries + 1):
         try:
             resp = requests.post(ENDPOINT, headers=headers, data=json.dumps(body), timeout=timeout_s)
+            if resp.status_code == 401:
+                # Token might have expired; refresh once.
+                bearer = get_bearer_token()
+                headers["Authorization"] = f"Bearer {bearer}"
             resp.raise_for_status()
             data = resp.json()
             reply = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -251,9 +274,9 @@ def extract_page_csv_from_image_b64(
     exemplars: list[tuple[str, str]],
     instructions: str
 ) -> str:
-    # Build contents inline to avoid NameError in threaded workers
     contents = _build_contents_for_page_inline(exemplars, instructions, image_b64)
     return gemini_generate_csv(contents)
+
 
 # === Cell 6: Batch extraction for a multipage PDF ===
 def process_pdf_multipage_to_csvs(

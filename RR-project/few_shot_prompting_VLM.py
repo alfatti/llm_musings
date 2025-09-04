@@ -179,22 +179,54 @@ len(exemplars), "exemplars loaded"
 
 # === Cell 5: Gemini call helpers ===
 
-def gemini_generate_csv(contents: List[dict], timeout_s: int = 120, max_retries: int = 3, backoff: float = 1.5) -> str:
+# === Cell 5 (fixed): Gemini call helpers — self-contained ===
+
+def _make_exemplar_turn(image_b64_png: str, gold_csv: str) -> tuple[dict, dict]:
+    user = {
+        "role": "user",
+        "parts": [
+            {"text": "Example rent roll page image:"},
+            {"inline_data": {"mime_type": "image/png", "data": image_b64_png}},
+            {"text": "Expected CSV for that page (emit EXACTLY this structure in your answer):\n" + gold_csv}
+        ],
+    }
+    model = {"role": "model", "parts": [{"text": gold_csv}]}
+    return user, model
+
+
+def _build_contents_for_page_inline(
+    exemplars: list[tuple[str, str]],  # list of (image_b64, csv)
+    instructions: str,
+    page_image_b64: str
+) -> list[dict]:
+    contents: list[dict] = []
+    for img_b64, csv in exemplars:
+        u, m = _make_exemplar_turn(img_b64, csv)
+        contents.extend([u, m])
+
+    contents.append({
+        "role": "user",
+        "parts": [
+            {"text": instructions + "\n\nNow extract the CSV for the following page."},
+            {"inline_data": {"mime_type": "image/png", "data": page_image_b64}},
+        ],
+    })
+    return contents
+
+
+def gemini_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries: int = 3, backoff: float = 1.5) -> str:
     """
     Calls Gemini once with provided contents; returns text (CSV expected).
     Retries simple transient failures with exponential backoff.
     """
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": API_KEY,
-    }
+    headers = {"Content-Type": "application/json", "x-goog-api-key": API_KEY}
     body = {
         "contents": contents,
         "generationConfig": {
             "temperature": 0.0,
             "topP": 0.1,
             "maxOutputTokens": 4096,
-            # "responseMimeType": "text/csv",  # Uncomment if your endpoint supports it reliably
+            # "responseMimeType": "text/csv",  # enable if your endpoint supports it
         },
     }
 
@@ -204,9 +236,8 @@ def gemini_generate_csv(contents: List[dict], timeout_s: int = 120, max_retries:
             resp = requests.post(ENDPOINT, headers=headers, data=json.dumps(body), timeout=timeout_s)
             resp.raise_for_status()
             data = resp.json()
-            # Typical path:
             reply = data["candidates"][0]["content"]["parts"][0]["text"]
-            return strip_code_fences(reply)
+            return strip_code_fences(reply).strip()
         except Exception as e:
             last_err = e
             if attempt < max_retries:
@@ -214,13 +245,16 @@ def gemini_generate_csv(contents: List[dict], timeout_s: int = 120, max_retries:
             else:
                 raise last_err
 
+
 def extract_page_csv_from_image_b64(
     image_b64: str,
-    exemplars: List[Tuple[str, str]],
+    exemplars: list[tuple[str, str]],
     instructions: str
 ) -> str:
-    contents = build_contents_for_page(exemplars, instructions, image_b64)
+    # Build contents inline to avoid NameError in threaded workers
+    contents = _build_contents_for_page_inline(exemplars, instructions, image_b64)
     return gemini_generate_csv(contents)
+
 # === Cell 6: Batch extraction for a multipage PDF ===
 def process_pdf_multipage_to_csvs(
     pdf_path: str,

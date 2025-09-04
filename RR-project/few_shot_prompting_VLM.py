@@ -345,10 +345,9 @@ def preview_prompt_and_exemplars(
 ):
     """
     Print the base instructions and show exemplars in Markdown format.
-    pdf_paths (optional): list of file paths that correspond to exemplars, so you
-                          can see which file each CSV came from.
+    Safe for CSVs with quotes/commas/newlines.
     """
-    print("=== BASE PROMPT ===")
+    print("=== BASE PROMPT ===\n")
     print(instructions)
     print("\n\n=== EXEMPLARS ===\n")
     for i, (_, csv_text) in enumerate(exemplars):
@@ -357,8 +356,9 @@ def preview_prompt_and_exemplars(
             label += f" (from {pdf_paths[i]})"
         print(f"--- {label} ---")
         print("```csv")
+        # print raw CSV string; strip trailing newlines to avoid empty block
         print(csv_text.strip())
         print("```\n")
-")
+
 
 

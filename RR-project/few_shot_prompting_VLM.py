@@ -336,17 +336,29 @@ for i, (img_b64, csv_text) in enumerate(exemplars):
     print(preview)
 
 
-# === Cell: Validate exemplar CSV headers ===
-import pandas as pd
-import io
+# === BASE PROMPT and Exemplar sanity check ===
 
-for i, (img_b64, csv_text) in enumerate(exemplars):
-    try:
-        df = pd.read_csv(io.StringIO(csv_text))
-        missing = [col for col in OUTPUT_COLUMNS if col not in df.columns]
-        extra   = [col for col in df.columns if col not in OUTPUT_COLUMNS]
-        print(f"Exemplar {i}: rows={len(df)}, missing={missing}, extra={extra}")
-    except Exception as e:
-        print(f"Exemplar {i}: ERROR reading CSV: {e}")
+def preview_prompt_and_exemplars(
+    instructions: str,
+    exemplars: List[Tuple[str, str]],
+    pdf_paths: Optional[List[str]] = None
+):
+    """
+    Print the base instructions and show exemplars in Markdown format.
+    pdf_paths (optional): list of file paths that correspond to exemplars, so you
+                          can see which file each CSV came from.
+    """
+    print("=== BASE PROMPT ===")
+    print(instructions)
+    print("\n\n=== EXEMPLARS ===\n")
+    for i, (_, csv_text) in enumerate(exemplars):
+        label = f"Exemplar {i+1}"
+        if pdf_paths and i < len(pdf_paths):
+            label += f" (from {pdf_paths[i]})"
+        print(f"--- {label} ---")
+        print("```csv")
+        print(csv_text.strip())
+        print("```\n")
+")
 
 

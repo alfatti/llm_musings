@@ -49,52 +49,43 @@ QUALITY RULES
 """.strip()
 
 # === Cell 3: Helpers ===
-import io
+# === REPLACE in Cell 3 ===
+import pathlib, json, pandas as pd
 
-def _resize_png_if_needed(png_bytes: bytes, max_width: int = 1600) -> bytes:
-    try:
-        from PIL import Image
-        im = Image.open(io.BytesIO(png_bytes))
-        if im.width > max_width:
-            ratio = max_width / im.width
-            im = im.resize((max_width, int(im.height * ratio)))
-            out = io.BytesIO()
-            im.save(out, format="PNG")
-            return out.getvalue()
-        return png_bytes
-    except Exception:
-        return png_bytes
-
-def pdf_to_base64_pages(pdf_path: str, dpi: int = 200, max_width: int = 1600) -> List[str]:
+def read_table_file(file_path: str, sheet: Optional[object] = None) -> pd.DataFrame:
     """
-    Render ALL pages of a PDF to PNG (base64). Tries PyMuPDF; falls back to pdf2image.
-    Returns list of base64 strings, one per page.
+    Robust loader for gold extracts:
+      - .xlsx/.xls: returns a single DataFrame (defaults to first sheet if sheet is None)
+      - .csv: returns DataFrame via read_csv
+      - .json: expects array-of-objects and returns DataFrame
     """
-    pages_b64 = []
-    try:
-        import fitz  # PyMuPDF
-        doc = fitz.open(pdf_path)
-        zoom = dpi / 72.0
-        mat = fitz.Matrix(zoom, zoom)
-        for i in range(len(doc)):
-            page = doc[i]
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            png = pix.tobytes("png")
-            png = _resize_png_if_needed(png, max_width=max_width)
-            pages_b64.append(base64.b64encode(png).decode("utf-8"))
-    except Exception:
-        # fallback to pdf2image
-        from pdf2image import convert_from_path
-        images = convert_from_path(pdf_path, dpi=dpi)
-        for im in images:
-            buf = io.BytesIO()
-            im.save(buf, format="PNG")
-            png = _resize_png_if_needed(buf.getvalue(), max_width=max_width)
-            pages_b64.append(base64.b64encode(png).decode("utf-8"))
-    return pages_b64
-
+    ext = pathlib.Path(file_path).suffix.lower()
+    if ext in (".xlsx", ".xls"):
+        # Default to first sheet instead of None (which returns dict-of-DFs)
+        sheet_name = 0 if sheet is None else sheet
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+        # In case the caller passes a list of sheets, Pandas returns a dict
+        if isinstance(df, dict):
+            # Pick the first sheet in the dict
+            df = next(iter(df.values()))
+        return df
+    elif ext == ".csv":
+        return pd.read_csv(file_path)
+    elif ext == ".json":
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return pd.DataFrame(data)
+    else:
+        raise ValueError(f"Unsupported table file type: {ext}")
 
 def dataframe_to_csv_string(df: pd.DataFrame, header_order: Optional[List[str]] = None) -> str:
+    if isinstance(df, dict):
+        raise TypeError(
+            "Expected a pandas DataFrame but got a dict. "
+            "This usually means read_excel returned multiple sheets. "
+            "Pass sheet=... or ensure a single sheet is selected."
+        )
+    df = df.copy()
     if header_order:
         for col in header_order:
             if col not in df.columns:
@@ -103,60 +94,17 @@ def dataframe_to_csv_string(df: pd.DataFrame, header_order: Optional[List[str]] 
     df = df.where(df.notna(), "")
     return df.to_csv(index=False)
 
-
-def excel_extract_to_csv(xlsx_path: str, sheet: Optional[str] = None, header_order: Optional[List[str]] = None) -> str:
-    df = pd.read_excel(xlsx_path, sheet_name=sheet)
+def excel_extract_to_csv(
+    table_path: str,
+    sheet: Optional[object] = None,
+    header_order: Optional[List[str]] = None
+) -> str:
+    """
+    Load an Excel/CSV/JSON 'gold' extract and normalize to CSV with the requested headers.
+    """
+    df = read_table_file(table_path, sheet=sheet)
     return dataframe_to_csv_string(df, header_order)
 
-
-def make_exemplar_turn(image_b64_png: str, gold_csv: str) -> Tuple[dict, dict]:
-    """
-    Build a (user, model) turn pair for few-shot.
-    """
-    user = {
-        "role": "user",
-        "parts": [
-            {"text": "Example rent roll page image:"},
-            {"inline_data": {"mime_type": "image/png", "data": image_b64_png}},
-            {"text": "Expected CSV for that page (emit EXACTLY this structure in your answer):\n" + gold_csv}
-        ],
-    }
-    model = {"role": "model", "parts": [{"text": gold_csv}]}
-    return user, model
-
-
-def build_contents_for_page(
-    exemplars: List[Tuple[str, str]],  # list of (image_b64, csv)
-    instructions: str,
-    page_image_b64: str
-) -> List[dict]:
-    """
-    Build the full contents array: exemplar turns + final user turn for the target page.
-    """
-    contents: List[dict] = []
-    for img_b64, csv in exemplars:
-        u, m = make_exemplar_turn(img_b64, csv)
-        contents.extend([u, m])
-
-    contents.append({
-        "role": "user",
-        "parts": [
-            {"text": instructions + "\n\nNow extract the CSV for the following page."},
-            {"inline_data": {"mime_type": "image/png", "data": page_image_b64}},
-        ],
-    })
-    return contents
-
-
-def strip_code_fences(text: str) -> str:
-    t = text.strip()
-    if t.startswith("```"):
-        # remove starting fence
-        t = t.split("```", 2)
-        if len(t) == 3:
-            # middle is the payload
-            return t[1].split("\n", 1)[1] if "\n" in t[1] else t[1]
-    return text.strip()
 
 # === Cell 4: Load exemplars ===
 # Fill these paths with your few-shot training examples:

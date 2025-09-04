@@ -316,3 +316,33 @@ xlsx_out
 # Exemplars: 4–8 high-quality, diverse examples typically work best. You can rotate them by property type/layout to improve generalization.
 # If you want, I can add an error review tab (pages with malformed CSVs + raw text) or a rate-limit-aware queue (token bucket) for friendlier scaling.
 
+# inspect exemplars in the prompt
+# === Cell: Print exemplar CSVs ===
+for i, (img_b64, csv_text) in enumerate(exemplars):
+    print(f"\n=== EXEMPLAR {i} CSV ===")
+    print(csv_text[:1000])   # print first ~1000 chars
+
+
+# === Cell: Show exemplar images ===
+import base64
+from IPython.display import Image, display
+
+for i, (img_b64, csv_text) in enumerate(exemplars):
+    print(f"\n=== EXEMPLAR {i} IMAGE ===")
+    display(Image(data=base64.b64decode(img_b64)))
+    print(f"CSV (first 10 lines):\n{'\n'.join(csv_text.splitlines()[:10])}")
+
+# === Cell: Validate exemplar CSV headers ===
+import pandas as pd
+import io
+
+for i, (img_b64, csv_text) in enumerate(exemplars):
+    try:
+        df = pd.read_csv(io.StringIO(csv_text))
+        missing = [col for col in OUTPUT_COLUMNS if col not in df.columns]
+        extra   = [col for col in df.columns if col not in OUTPUT_COLUMNS]
+        print(f"Exemplar {i}: rows={len(df)}, missing={missing}, extra={extra}")
+    except Exception as e:
+        print(f"Exemplar {i}: ERROR reading CSV: {e}")
+
+

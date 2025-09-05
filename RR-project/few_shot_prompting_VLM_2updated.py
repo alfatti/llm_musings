@@ -426,3 +426,48 @@ def build_fewshot_from_pairs(
 # )
 # print(json.dumps(results, indent=2))
 
+
+# %% [markdown]
+# Inspector for Few-Shot (image, JSON) examples
+
+import json
+from typing import List
+import matplotlib.pyplot as plt
+
+def inspect_fewshot_examples(fewshot_examples: List[FewShotExample],
+                             user_text: str = "Here is a rent-roll page image. Extract into JSON.") -> None:
+    """
+    Display the contents of few-shot examples inline in Jupyter:
+    - prints the user text
+    - renders the image
+    - pretty-prints the JSON gold
+    """
+    for idx, ex in enumerate(fewshot_examples):
+        print("=" * 60)
+        print(f"Example #{idx+1}")
+        print("- User text:")
+        print(user_text)
+        
+        # Show the image
+        img_bytes = base64.b64decode(ex.image_b64_png)
+        im = Image.open(io.BytesIO(img_bytes))
+        plt.figure(figsize=(6, 8))
+        plt.imshow(im)
+        plt.axis("off")
+        plt.title(f"Example #{idx+1} Image")
+        plt.show()
+        
+        # Pretty print the JSON
+        try:
+            parsed = json.loads(ex.gold_json)
+            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+        except Exception:
+            pretty = ex.gold_json
+        print("- Gold JSON:")
+        print(pretty)
+        print()
+
+# Example usage (assuming you already built your fewshot list):
+# inspect_fewshot_examples(fewshot)
+
+

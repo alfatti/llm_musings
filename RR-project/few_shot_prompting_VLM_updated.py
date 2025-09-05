@@ -1,3 +1,4 @@
+
 # === Cell 1: Config & imports ===
 import os, io, json, time, base64, pathlib
 from typing import List, Tuple, Optional, Dict
@@ -8,16 +9,13 @@ import pandas as pd
 
 # ---- Vertex AI (fill these or set via environment) ----
 PROJECT_ID = os.getenv("VERTEX_PROJECT_ID", "YOUR_PROJECT_ID")
-LOCATION   = os.getenv("VERTEX_LOCATION",   "us-central1")  # e.g. "us-central1", "europe-west1"
-MODEL_ID   = os.getenv("VERTEX_MODEL_ID",   "gemini-2.5-flash")  # or "gemini-2.5-pro", etc.
+LOCATION   = os.getenv("VERTEX_LOCATION",   "us-central1")
+MODEL_ID   = os.getenv("VERTEX_MODEL_ID",   "gemini-2.5-flash")
 TOKEN      = os.getenv("VERTEX_TOKEN",      "PASTE_YOUR_BEARER_TOKEN_HERE")
 
-# Endpoint per Vertex spec:
-# https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/publishers/google/models/{MODEL}:generateContent
 VERTEX_HOST = f"https://{LOCATION}-aiplatform.googleapis.com"
 ENDPOINT    = f"{VERTEX_HOST}/v1/projects/{PROJECT_ID}/locations/{LOCATION}/publishers/google/models/{MODEL_ID}:generateContent"
 
-# Output folder
 OUTPUT_DIR = pathlib.Path("outputs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -28,6 +26,8 @@ OUTPUT_COLUMNS = [
     "Market Rent","Concession Amount","Is Concession",
     "Move In","Move Out"
 ]
+
+REQUIRED_HEADER = ",".join(OUTPUT_COLUMNS)
 
 BASE_INSTRUCTIONS = f"""
 You are a precise rent-roll table extractor.
@@ -45,7 +45,7 @@ NORMALIZATION
 
 STRICT OUTPUT
 - Output ONLY CSV with header row EXACTLY:
-  {','.join(OUTPUT_COLUMNS)}
+  {REQUIRED_HEADER}
 - No explanations, no extra columns, no code fences.
 - One row per unit present on the page (deduplicate if repeated).
 
@@ -56,7 +56,7 @@ QUALITY RULES
 """.strip()
 
 # === Cell 3: Helpers ===
-import io, base64
+import io
 
 def _resize_png_if_needed(png_bytes: bytes, max_width: int = 1600) -> bytes:
     try:
@@ -73,10 +73,6 @@ def _resize_png_if_needed(png_bytes: bytes, max_width: int = 1600) -> bytes:
         return png_bytes
 
 def pdf_to_base64_pages(pdf_path: str, dpi: int = 200, max_width: int = 1600) -> List[str]:
-    """
-    Render ALL pages of a PDF to PNG (base64). Tries PyMuPDF; falls back to pdf2image.
-    Returns list of base64 strings, one per page.
-    """
     pages_b64 = []
     try:
         import fitz  # PyMuPDF
@@ -112,56 +108,6 @@ def excel_extract_to_csv(xlsx_path: str, sheet: Optional[str] = None, header_ord
     df = pd.read_excel(xlsx_path, sheet_name=sheet)
     return dataframe_to_csv_string(df, header_order)
 
-def strip_code_fences(text: str) -> str:
-    t = text.strip()
-    if t.startswith("```"):
-        # Try to remove leading code fence blocks
-        parts = t.split("```")
-        # Heuristic: return the largest middle block
-        payloads = [p for p in parts[1::2]]  # code blocks
-        if payloads:
-            # If block starts with "csv\n", drop the first line
-            body = payloads[0]
-            if "\n" in body:
-                first, rest = body.split("\n", 1)
-                if first.lower().strip() in {"csv", "json", "text"}:
-                    return rest.strip()
-            return body.strip()
-    return t
-
-
-# === Cell 4: Load exemplars ===
-# Point these to your curated few-shot examples:
-example_pdf_paths = [
-    "examples/rr_01.pdf",
-    "examples/rr_02.pdf",
-    "examples/rr_03.pdf",
-    "examples/rr_04.pdf",
-    "examples/rr_05.pdf",
-    "examples/rr_06.pdf",
-]
-example_gold_excel_paths = [
-    "examples/rr_01_gold.xlsx",
-    "examples/rr_02_gold.xlsx",
-    "examples/rr_03_gold.xlsx",
-    "examples/rr_04_gold.xlsx",
-    "examples/rr_05_gold.xlsx",
-    "examples/rr_06_gold.xlsx",
-]
-
-# Convert exemplars → (first page image base64, gold CSV aligned to schema)
-exemplars: List[Tuple[str, str]] = []
-for pdf_path, gold_xlsx in zip(example_pdf_paths, example_gold_excel_paths):
-    pages_b64 = pdf_to_base64_pages(pdf_path, dpi=200)
-    if not pages_b64:
-        raise RuntimeError(f"No pages found in exemplar PDF: {pdf_path}")
-    gold_csv = excel_extract_to_csv(gold_xlsx, header_order=OUTPUT_COLUMNS)
-    exemplars.append((pages_b64[0], gold_csv))
-
-len(exemplars), "exemplars loaded"
-
-# === Cell 5: Vertex AI call helpers (Bearer token) ===
-
 def _make_exemplar_turn(image_b64_png: str, gold_csv: str) -> tuple[dict, dict]:
     user = {
         "role": "user",
@@ -192,11 +138,83 @@ def _build_contents_for_page_inline(
     })
     return contents
 
+def _strip_code_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```") and t.endswith("```"):
+        inner = t.strip("`")
+        # remove leading language tag if present
+        if "\n" in inner:
+            first, rest = inner.split("\n", 1)
+            return rest.strip()
+    return t
+
+def _collect_text_from_vertex_response(data: dict) -> str:
+    """
+    Robustly gather all text parts from the first candidate.
+    Raises on block reasons.
+    """
+    # Blocked?
+    pf = data.get("promptFeedback", {})
+    if pf.get("blockReason"):
+        raise RuntimeError(f"Prompt blocked: {pf.get('blockReason')} — {pf.get('safetyRatings')}")
+
+    cands = data.get("candidates", [])
+    if not cands:
+        raise RuntimeError(f"No candidates in response: {json.dumps(data)[:400]}")
+
+    cand = cands[0]
+    # Candidate-level block?
+    if cand.get("finishReason") == "SAFETY":
+        raise RuntimeError(f"Response blocked by safety: {cand.get('safetyRatings')}")
+    content = cand.get("content", {})
+    parts = content.get("parts", [])
+    if not parts:
+        raise RuntimeError(f"No content.parts in response: {json.dumps(data)[:400]}")
+
+    texts = []
+    for p in parts:
+        if "text" in p and isinstance(p["text"], str):
+            texts.append(p["text"])
+    if not texts:
+        raise RuntimeError(f"No text parts in response: {json.dumps(data)[:400]}")
+
+    return _strip_code_fences("\n".join(texts)).strip()
+
+def _looks_like_valid_csv(csv_text: str) -> bool:
+    head = csv_text.splitlines()[:1]
+    return len(head) == 1 and head[0].strip() == REQUIRED_HEADER
+
+# === Cell 4: Load exemplars ===
+example_pdf_paths = [
+    "examples/rr_01.pdf",
+    "examples/rr_02.pdf",
+    "examples/rr_03.pdf",
+    "examples/rr_04.pdf",
+    "examples/rr_05.pdf",
+    "examples/rr_06.pdf",
+]
+example_gold_excel_paths = [
+    "examples/rr_01_gold.xlsx",
+    "examples/rr_02_gold.xlsx",
+    "examples/rr_03_gold.xlsx",
+    "examples/rr_04_gold.xlsx",
+    "examples/rr_05_gold.xlsx",
+    "examples/rr_06_gold.xlsx",
+]
+
+exemplars: List[Tuple[str, str]] = []
+for pdf_path, gold_xlsx in zip(example_pdf_paths, example_gold_excel_paths):
+    pages_b64 = pdf_to_base64_pages(pdf_path, dpi=200)
+    if not pages_b64:
+        raise RuntimeError(f"No pages found in exemplar PDF: {pdf_path}")
+    gold_csv = excel_extract_to_csv(gold_xlsx, header_order=OUTPUT_COLUMNS)
+    exemplars.append((pages_b64[0], gold_csv))
+
+len(exemplars), "exemplars loaded"
+
+# === Cell 5: Vertex call + page extractor ===
+
 def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries: int = 3, backoff: float = 1.7) -> str:
-    """
-    Calls Vertex AI Generative endpoint with Bearer token. Returns CSV text.
-    Retries transient failures with exponential backoff.
-    """
     headers = {
         "Authorization": f"Bearer {TOKEN}",
         "Content-Type": "application/json; charset=utf-8",
@@ -207,10 +225,9 @@ def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
             "temperature": 0.0,
             "topP": 0.1,
             "maxOutputTokens": 4096,
-            # "responseMimeType": "text/csv",  # Uncomment if enabled in your org
+            "candidateCount": 1,
+            "responseMimeType": "text/csv",  # ask for CSV explicitly
         },
-        # Optional: send as a system instruction on Vertex
-        # "systemInstruction": {"role": "system", "parts": [{"text": "You are a precise rent-roll extractor."}]}
     }
 
     last_err = None
@@ -218,12 +235,11 @@ def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
         try:
             resp = requests.post(ENDPOINT, headers=headers, data=json.dumps(body), timeout=timeout_s)
             if resp.status_code == 401:
-                raise RuntimeError(f"401 Unauthorized — check TOKEN, project, location, or model. Body: {resp.text[:400]}")
+                raise RuntimeError(f"401 Unauthorized — check TOKEN/Project/Location/Model. Body: {resp.text[:400]}")
             resp.raise_for_status()
             data = resp.json()
-            # Typical path for Vertex:
-            reply = data["candidates"][0]["content"]["parts"][0]["text"]
-            return strip_code_fences(reply).strip()
+            text = _collect_text_from_vertex_response(data)
+            return text
         except Exception as e:
             last_err = e
             if attempt < max_retries:
@@ -237,9 +253,11 @@ def extract_page_csv_from_image_b64(
     instructions: str
 ) -> str:
     contents = _build_contents_for_page_inline(exemplars, instructions, image_b64)
-    return vertex_generate_csv(contents)
-
-
+    csv_text = vertex_generate_csv(contents)
+    # Final guard: ensure header is exact; otherwise mark as error to avoid "parts" or JSON blobs becoming CSV
+    if not _looks_like_valid_csv(csv_text):
+        raise RuntimeError(f"Model did not return a valid CSV with required header. Got head: {csv_text.splitlines()[:2]}")
+    return csv_text
 
 # === Cell 6: Batch processing & combine ===
 def process_pdf_multipage_to_csvs(
@@ -248,16 +266,11 @@ def process_pdf_multipage_to_csvs(
     instructions: str,
     max_workers: int = 4
 ) -> Dict[int, str]:
-    """
-    Shreds a multi-page PDF into images, then parallel-calls Vertex/Gemini for each page.
-    Returns {page_index: csv_text or "__ERROR__:<msg>"}.
-    """
     pages_b64 = pdf_to_base64_pages(pdf_path, dpi=200)
     if not pages_b64:
         raise RuntimeError(f"No pages found in: {pdf_path}")
 
     results: Dict[int, str] = {}
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(extract_page_csv_from_image_b64, b64, exemplars, instructions): idx
@@ -270,7 +283,6 @@ def process_pdf_multipage_to_csvs(
                 results[idx] = csv_text
             except Exception as e:
                 results[idx] = f"__ERROR__: {e}"
-
     return dict(sorted(results.items(), key=lambda kv: kv[0]))
 
 def combine_page_csvs_to_dataframe(
@@ -285,7 +297,6 @@ def combine_page_csvs_to_dataframe(
             df = pd.read_csv(io.StringIO(csv_text))
             if add_page_col:
                 df.insert(0, "PageIndex", idx)
-            # enforce expected columns
             for col in OUTPUT_COLUMNS:
                 if col not in df.columns:
                     df[col] = pd.NA
@@ -299,22 +310,25 @@ def combine_page_csvs_to_dataframe(
 
 # === Cell 7: Execute on a multipage PDF ===
 MULTIPAGE_PDF = "inputs/new_rentroll_multipage.pdf"  # <-- point to your file
-
-# Quick token sanity
-assert TOKEN and TOKEN != "PASTE_YOUR_BEARER_TOKEN_HERE", "Set a valid Bearer TOKEN (OAuth) for Vertex."
+assert TOKEN and TOKEN != "PASTE_YOUR_BEARER_TOKEN_HERE", "Set a valid Bearer TOKEN."
 
 page_csvs = process_pdf_multipage_to_csvs(
     pdf_path=MULTIPAGE_PDF,
     exemplars=exemplars,
     instructions=BASE_INSTRUCTIONS,
-    max_workers=6,  # tune to your quota
+    max_workers=6,  # tune for your quota
 )
 
-# Save per-page CSV files
+# Save per-page CSV (only valid CSVs; errors into *_errors.txt)
 base = pathlib.Path(MULTIPAGE_PDF).stem
-for idx, csv_text in page_csvs.items():
-    out = OUTPUT_DIR / f"{base}_page{idx:03d}.csv"
-    out.write_text(csv_text if csv_text else "", encoding="utf-8")
+errors_path = OUTPUT_DIR / f"{base}_errors.txt"
+with errors_path.open("w", encoding="utf-8") as errf:
+    for idx, csv_text in page_csvs.items():
+        if csv_text.startswith("__ERROR__"):
+            errf.write(f"Page {idx}: {csv_text}\n")
+            continue
+        out = OUTPUT_DIR / f"{base}_page{idx:03d}.csv"
+        out.write_text(csv_text, encoding="utf-8")
 
 # Combine and save to Excel
 df_all = combine_page_csvs_to_dataframe(page_csvs, add_page_col=True)
@@ -324,6 +338,4 @@ xlsx_out = OUTPUT_DIR / f"{base}_extract.xlsx"
 with pd.ExcelWriter(xlsx_out, engine="openpyxl", mode="w") as xw:
     df_all.to_excel(xw, sheet_name="RENT_ROLL_EXTRACT", index=False)
 
-xlsx_out
-
-
+xlsx_out, errors_path

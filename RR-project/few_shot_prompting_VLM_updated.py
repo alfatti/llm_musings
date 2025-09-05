@@ -95,14 +95,34 @@ def pdf_to_base64_pages(pdf_path: str, dpi: int = 200, max_width: int = 1600) ->
             pages_b64.append(base64.b64encode(png).decode("utf-8"))
     return pages_b64
 
-def dataframe_to_csv_string(df: pd.DataFrame, header_order: Optional[List[str]] = None) -> str:
+import pandas as pd
+
+def to_csv_string(obj, header_order=None) -> str:
+    """
+    Accepts a pandas DataFrame OR a dict/list-of-dicts,
+    returns CSV text with optional enforced header order.
+    """
+    # normalize to DataFrame
+    if isinstance(obj, pd.DataFrame):
+        df = obj.copy()
+    elif isinstance(obj, dict):
+        df = pd.DataFrame([obj])
+    elif isinstance(obj, list) and all(isinstance(x, dict) for x in obj):
+        df = pd.DataFrame(obj)
+    else:
+        raise TypeError(f"Unsupported exemplar type: {type(obj)}")
+
+    # enforce header order if provided
     if header_order:
         for col in header_order:
             if col not in df.columns:
                 df[col] = pd.NA
         df = df[header_order]
+
+    # clean NaNs → empty string
     df = df.where(df.notna(), "")
     return df.to_csv(index=False)
+
 
 def excel_extract_to_csv(xlsx_path: str, sheet: Optional[str] = None, header_order: Optional[List[str]] = None) -> str:
     df = pd.read_excel(xlsx_path, sheet_name=sheet)

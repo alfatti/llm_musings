@@ -176,12 +176,14 @@ def excel_extract_to_csv(xlsx_path: str, sheet: Optional[str] = None, header_ord
     df = pd.read_excel(xlsx_path, sheet_name=sheet)
     return dataframe_to_csv_string(df, header_order)
 
+# --- Replace your exemplar/content builders with these ---
+
 def _make_exemplar_turn(image_b64_png: str, gold_csv: str) -> tuple[dict, dict]:
     user = {
         "role": "user",
         "parts": [
             {"text": "Example rent roll page image:"},
-            {"inline_data": {"mime_type": "image/png", "data": image_b64_png}},
+            {"inlineData": {"mimeType": "image/png", "data": image_b64_png}},  # <-- camelCase
             {"text": "Expected CSV for that page (emit EXACTLY this structure in your answer):\n" + gold_csv}
         ],
     }
@@ -201,7 +203,7 @@ def _build_contents_for_page_inline(
         "role": "user",
         "parts": [
             {"text": instructions + "\n\nNow extract the CSV for the following page."},
-            {"inline_data": {"mime_type": "image/png", "data": page_image_b64}},
+            {"inlineData": {"mimeType": "image/png", "data": page_image_b64}},  # <-- camelCase
         ],
     })
     return contents
@@ -282,6 +284,8 @@ len(exemplars), "exemplars loaded"
 
 # === Cell 5: Vertex call + page extractor ===
 
+# --- Replace your Vertex call helper with this ---
+
 def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries: int = 3, backoff: float = 1.7) -> str:
     headers = {
         "Authorization": f"Bearer {TOKEN}",
@@ -293,8 +297,8 @@ def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
             "temperature": 0.0,
             "topP": 0.1,
             "maxOutputTokens": 4096,
-            "candidateCount": 1,
-            "responseMimeType": "text/csv",  # ask for CSV explicitly
+            # If your org supports it, you can keep this; otherwise comment it out:
+            # "responseMimeType": "text/csv",
         },
     }
 
@@ -302,9 +306,10 @@ def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
     for attempt in range(1, max_retries + 1):
         try:
             resp = requests.post(ENDPOINT, headers=headers, data=json.dumps(body), timeout=timeout_s)
-            if resp.status_code == 401:
-                raise RuntimeError(f"401 Unauthorized — check TOKEN/Project/Location/Model. Body: {resp.text[:400]}")
-            resp.raise_for_status()
+            # Helpful diagnostics for 4xx/5xx:
+            if resp.status_code >= 400:
+                # Write the server message so it shows up in your *_errors.txt
+                raise RuntimeError(f"{resp.status_code} {resp.reason} — {resp.text[:500]}")
             data = resp.json()
             text = _collect_text_from_vertex_response(data)
             return text
@@ -314,6 +319,7 @@ def vertex_generate_csv(contents: list[dict], timeout_s: int = 120, max_retries:
                 time.sleep(backoff ** attempt)
             else:
                 raise last_err
+
 
 def extract_page_csv_from_image_b64(
     image_b64: str,

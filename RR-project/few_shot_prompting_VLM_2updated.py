@@ -429,45 +429,166 @@ def build_fewshot_from_pairs(
 
 # %% [markdown]
 # Inspector for Few-Shot (image, JSON) examples
+# %% [markdown]
+# ------- Few-shot context inspector (text + images) -------
 
+import io
 import json
-from typing import List
+import base64
+from typing import List, Optional
 import matplotlib.pyplot as plt
+from PIL import Image
 
-def inspect_fewshot_examples(fewshot_examples: List[FewShotExample],
-                             user_text: str = "Here is a rent-roll page image. Extract into JSON.") -> None:
+# If not already in your notebook:
+# from dataclasses import dataclass
+# @dataclass
+# class FewShotExample:
+#     image_b64_png: str
+#     gold_json: str
+
+def _b64_to_pil(b64_png: str) -> Image.Image:
+    return Image.open(io.BytesIO(base64.b64decode(b64_png)))
+
+def inspect_fewshot_context(
+    fewshot_examples: List[FewShotExample],
+    system_preamble: str,
+    per_example_user_text: str = "Here is a rent-roll page image. Extract the table into the target JSON schema.",
+    final_test_instruction: str = "Extract the table on this page into the JSON schema described earlier. Return ONLY valid JSON (no prose).",
+    show_images: bool = True,
+) -> None:
     """
-    Display the contents of few-shot examples inline in Jupyter:
-    - prints the user text
-    - renders the image
-    - pretty-prints the JSON gold
+    Prints and renders the full textual context that will be sent to Gemini:
+      - System preamble (what we pass as the first 'user' turn)
+      - For each few-shot example:
+          * user text (the per-example instruction)
+          * image (inline)
+          * model gold JSON
+      - Final test instruction (what will precede the actual test image turn)
     """
-    for idx, ex in enumerate(fewshot_examples):
-        print("=" * 60)
-        print(f"Example #{idx+1}")
-        print("- User text:")
-        print(user_text)
-        
-        # Show the image
-        img_bytes = base64.b64decode(ex.image_b64_png)
-        im = Image.open(io.BytesIO(img_bytes))
-        plt.figure(figsize=(6, 8))
-        plt.imshow(im)
-        plt.axis("off")
-        plt.title(f"Example #{idx+1} Image")
-        plt.show()
-        
-        # Pretty print the JSON
-        try:
-            parsed = json.loads(ex.gold_json)
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-        except Exception:
-            pretty = ex.gold_json
-        print("- Gold JSON:")
-        print(pretty)
+    print("="*80)
+    print("SYSTEM PREAMBLE (first user turn):")
+    print("-"*80)
+    print(system_preamble.strip())
+    print()
+
+    for i, ex in enumerate(fewshot_examples, 1):
+        print("="*80)
+        print(f"FEW-SHOT EXAMPLE #{i}")
+        print("-"*80)
+        print("User text (few-shot instruction):")
+        print(per_example_user_text.strip())
         print()
 
-# Example usage (assuming you already built your fewshot list):
-# inspect_fewshot_examples(fewshot)
+        if show_images:
+            im = _b64_to_pil(ex.image_b64_png)
+            plt.figure(figsize=(6, 8))
+            plt.imshow(im)
+            plt.axis("off")
+            plt.title(f"Few-shot image #{i}")
+            plt.show()
+
+        print("Model gold JSON:")
+        try:
+            parsed = json.loads(ex.gold_json)
+            print(json.dumps(parsed, indent=2, ensure_ascii=False))
+        except Exception:
+            print(ex.gold_json)
+        print()
+
+    print("="*80)
+    print("FINAL TEST INSTRUCTION (the text paired with your real test image):")
+    print("-"*80)
+    print(final_test_instruction.strip())
+    print()
+
+
+def build_contents_preview_without_test_image(
+    fewshot_examples: List[FewShotExample],
+    system_preamble: str,
+    per_example_user_text: str = "Here is a rent-roll page image. Extract the table into the target JSON schema.",
+    json_contract_note: str = "Return ONLY valid JSON. No prose, no code fences.",
+) -> list:
+    """
+    Builds the exact 'contents' structure (minus the final test turn) to preview
+    what will be POSTed to Gemini. This mirrors your few-shot assembly:
+      [ {role:user, parts:[system_preamble]},
+        {role:user, parts:[per_example_user_text, image, json_contract_note]},
+        {role:model, parts:[gold_json]}, ... ]
+    """
+    contents = []
+    if system_preamble:
+        contents.append({"role": "user", "parts": [{"text": system_preamble}]})
+
+    for ex in fewshot_examples:
+        contents.append({
+            "role": "user",
+            "parts": [
+                {"text": per_example_user_text},
+                {"inline_data": {"mime_type": "image/png", "data": ex.image_b64_png}},
+                {"text": json_contract_note},
+            ],
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": ex.gold_json}],
+        })
+
+    return contents
+
+
+def preview_contents_as_json(
+    contents: list,
+    truncate_text: Optional[int] = 400,
+) -> None:
+    """
+    Pretty-prints a concise preview of the contents payload.
+    Large blobs (images/gold JSON) can be truncated for readability.
+    """
+    def trunc(s: str) -> str:
+        if truncate_text and len(s) > truncate_text:
+            return s[:truncate_text] + f"... [truncated {len(s)-truncate_text} chars]"
+        return s
+
+    preview = []
+    for turn in contents:
+        role = turn.get("role", "?")
+        parts_preview = []
+        for p in turn.get("parts", []):
+            if "text" in p:
+                parts_preview.append({"text": trunc(p["text"])})
+            elif "inline_data" in p:
+                meta = p["inline_data"]
+                parts_preview.append({
+                    "inline_data": {
+                        "mime_type": meta.get("mime_type", "image/png"),
+                        "data": f"<base64 {len(meta.get('data',''))} chars>",
+                    }
+                })
+            else:
+                parts_preview.append({"unknown_part": True})
+        preview.append({"role": role, "parts": parts_preview})
+
+    print(json.dumps(preview, indent=2, ensure_ascii=False))
+
+
+# ---------------------------
+# Example usage (after you build `fewshot` + have DEFAULT_SYSTEM/DEFAULT_INSTRUCTION):
+#
+# inspect_fewshot_context(
+#     fewshot_examples=fewshot,
+#     system_preamble=DEFAULT_SYSTEM,
+#     per_example_user_text="Here is a rent-roll page image. Extract the table into the target JSON schema.",
+#     final_test_instruction=DEFAULT_INSTRUCTION,
+#     show_images=True,
+# )
+#
+# contents_preview = build_contents_preview_without_test_image(
+#     fewshot_examples=fewshot,
+#     system_preamble=DEFAULT_SYSTEM,
+#     per_example_user_text="Here is a rent-roll page image. Extract the table into the target JSON schema.",
+# )
+# preview_contents_as_json(contents_preview, truncate_text=500)
+# ---------------------------
+
 
 

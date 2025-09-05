@@ -97,20 +97,68 @@ def pdf_to_base64_pages(pdf_path: str, dpi: int = 200, max_width: int = 1600) ->
 
 import pandas as pd
 
-def to_csv_string(obj, header_order=None) -> str:
+import os, json
+import pandas as pd
+from typing import Union, List, Optional
+
+def to_csv_string_flexible(
+    obj: Union[pd.DataFrame, dict, List[dict], str],
+    header_order: Optional[List[str]] = None,
+    sheet: Optional[str] = None,
+) -> str:
     """
-    Accepts a pandas DataFrame OR a dict/list-of-dicts,
-    returns CSV text with optional enforced header order.
+    Convert various inputs to CSV text with optional enforced header order.
+    Supported obj types:
+      - pandas.DataFrame
+      - dict (one row)
+      - list[dict] (multiple rows)
+      - str path: .xlsx/.xls, .csv, .json
+        * Excel: reads `sheet` if provided, else first sheet
+        * CSV: pandas.read_csv
+        * JSON: either a dict or list[dict] in the file
     """
-    # normalize to DataFrame
+    # Normalize to DataFrame
     if isinstance(obj, pd.DataFrame):
         df = obj.copy()
+
     elif isinstance(obj, dict):
         df = pd.DataFrame([obj])
+
     elif isinstance(obj, list) and all(isinstance(x, dict) for x in obj):
         df = pd.DataFrame(obj)
+
+    elif isinstance(obj, str):
+        path = obj
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".xlsx", ".xls"):
+            df = pd.read_excel(path, sheet_name=sheet)
+        elif ext == ".csv":
+            df = pd.read_csv(path)
+        elif ext == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                df = pd.DataFrame([data])
+            elif isinstance(data, list) and all(isinstance(x, dict) for x in data):
+                df = pd.DataFrame(data)
+            else:
+                raise TypeError(f"JSON must be dict or list[dict], got {type(data)} in {path}")
+        else:
+            raise TypeError(f"Unsupported file extension '{ext}' for path: {path}")
     else:
         raise TypeError(f"Unsupported exemplar type: {type(obj)}")
+
+    # Enforce header order if provided
+    if header_order:
+        for col in header_order:
+            if col not in df.columns:
+                df[col] = pd.NA
+        df = df[header_order]
+
+    # Clean NaNs → empty string
+    df = df.where(df.notna(), "")
+    return df.to_csv(index=False)
+
 
     # enforce header order if provided
     if header_order:

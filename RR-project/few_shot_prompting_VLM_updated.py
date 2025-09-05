@@ -413,3 +413,20 @@ with pd.ExcelWriter(xlsx_out, engine="openpyxl", mode="w") as xw:
     df_all.to_excel(xw, sheet_name="RENT_ROLL_EXTRACT", index=False)
 
 xlsx_out, errors_path
+
+# +++++++++++++++++++++++++++++++++
+# +++++++++++++++++++++++++++++++++
+test_pdf = MULTIPAGE_PDF  # or point to a small file
+first_b64 = pdf_to_base64_pages(test_pdf, dpi=200)[0]
+contents = _build_contents_for_page_inline(exemplars, BASE_INSTRUCTIONS, first_b64)
+
+# Print a tiny slice of the body to confirm keys look right:
+print(json.dumps({"contents": contents[:1]}, indent=2)[:600])
+
+# Live call
+try:
+    csv_text = vertex_generate_csv(contents)
+    print(csv_text.splitlines()[:3])  # show header + first row
+except Exception as e:
+    print("REQUEST FAILED:", e)
+

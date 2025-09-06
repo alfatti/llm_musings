@@ -336,7 +336,11 @@ def infer_single_page_json(
         system_preamble=system_preamble,
         json_contract_note="Return ONLY valid JSON. No prose, no code fences."
     )
-    append_test_image_turn(contents, instruction=instruction, pil_image=page_image)
+    append_test_image_turn(
+    contents,
+    instruction=instruction + "\n\nOutput format:\n```json\n[ { ... } ]\n```\nReturn only the JSON block.",
+    pil_image=page_image
+)
 
     resp = call_gemini_rest(
         contents=contents,

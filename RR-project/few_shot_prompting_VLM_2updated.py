@@ -279,15 +279,46 @@ def call_gemini_rest(
     raise last_err if last_err else RuntimeError("Unknown error calling Gemini REST.")
 
 
-def response_text_or_empty(resp: Dict[str, Any]) -> str:
+def response_text_or_empty(resp: dict) -> str:
     """
-    Pull the model text from Vertex REST response.
-    Newer APIs: resp['candidates'][0]['content']['parts'][0]['text']
+    Extracts all 'text' fields from candidate parts.
+    Also surfaces safety blocks and common error shapes.
     """
-    try:
-        return resp["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        return ""
+    # Safety / prompt feedback block?
+    pf = resp.get("promptFeedback")
+    if pf and pf.get("blockReason"):
+        reason = pf.get("blockReason")
+        details = pf.get("safetyRatings", [])
+        raise RuntimeError(f"Prompt blocked by safety. blockReason={reason}; safetyRatings={details}")
+
+    cands = resp.get("candidates") or []
+    if not cands:
+        # Some older transports use 'predictions'
+        preds = resp.get("predictions") or []
+        if preds:
+            # Try the common text location
+            try:
+                return preds[0]["content"]["parts"][0]["text"]
+            except Exception:
+                pass
+        # Nothing we can parse—dump a short diagnostic
+        raise RuntimeError(f"No candidates in response. Top-level keys: {list(resp.keys())[:10]}")
+
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    texts = []
+    for p in parts:
+        if "text" in p and isinstance(p["text"], str):
+            texts.append(p["text"])
+    # Join all text parts (some models split output across parts)
+    joined = "\n".join(texts).strip()
+
+    if not joined:
+        # Last-ditch: sometimes JSON is sent as a functionCall or other part
+        # Surface a concise diagnostic to help debugging
+        raise RuntimeError(f"Empty text parts. First part keys: {list(parts[0].keys()) if parts else '[]'}; candidates keys: {list(cands[0].keys())}")
+
+    return joined
+
 
 
 # -----------------------------
@@ -300,7 +331,6 @@ def infer_single_page_json(
     system_preamble: str,
     access_token: str = ACCESS_TOKEN,
 ) -> str:
-    """Run inference for a single page: returns a JSON string (sanitized)."""
     contents = build_contents_for_fewshot(
         examples=fewshot_examples,
         system_preamble=system_preamble,
@@ -314,10 +344,13 @@ def infer_single_page_json(
         generation_config=GEN_CONFIG,
         safety_settings=SAFETY_SETTINGS,
     )
+
+    # Quick peek if you’re debugging:
+    # print(json.dumps(resp, indent=2)[:1500])
+
     raw = response_text_or_empty(resp)
-    if not raw:
-        raise ValueError("Empty response from model.")
     return extract_json_block(raw)
+
 
 
 def infer_pdf_pages_parallel(

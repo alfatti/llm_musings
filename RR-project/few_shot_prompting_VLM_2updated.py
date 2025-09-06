@@ -627,5 +627,20 @@ def preview_contents_as_json(
 # preview_contents_as_json(contents_preview, truncate_text=500)
 # ---------------------------
 
+def gemini_smoke_test(access_token: str = ACCESS_TOKEN):
+    test_contents = [
+        {"role": "user", "parts": [{"text": "Return a JSON object: {\"ok\": true, \"note\": \"smoke\"}"}]}
+    ]
+    resp = call_gemini_rest(
+        contents=test_contents,
+        access_token=access_token,
+        generation_config={"temperature": 0, "maxOutputTokens": 64},
+    )
+    print("SMOKE status: OK")
+    print("RAW:", json.dumps(resp, indent=2)[:800])
+    txt = response_text_or_empty(resp)
+    print("TEXT:", txt)
+
+# gemini_smoke_test()
 
 

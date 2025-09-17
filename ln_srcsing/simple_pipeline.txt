@@ -1,0 +1,25 @@
++-----------------------------+                 
+|  Structured Loan Workbook   |                 
+|  (raw loan tabs, docs)      |
++--------------+--------------+
+               |
+               v
++--------------+--------------+
+|  VBA Module (Macros)        |
+|  - Generate extraction      |
+|    prompt table             |
++--------------+--------------+
+               |
+               v
++--------------+--------------+
+|  Prompt Table Sheet         |
+|  - Variable | Prompt text   |
++--------------+--------------+
+               |
+   (analyst copies prompt)    
+               v
++-----------------------------+
+| Copilot in Excel (Chat pane)|
+| - Analyst pastes prompt     |
+| - Copilot extracts variable |
++-----------------------------+

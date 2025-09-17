@@ -1,0 +1,41 @@
+   ┌─────────────────────┐
+   │   VBA Source Code   │
+   │   (in GitHub repo)  │
+   └─────────┬───────────┘
+             │
+             ▼
+   ┌─────────────────────┐
+   │ Build / Package     │
+   │  - Export .xlam     │
+   │  - Sign with cert   │
+   └─────────┬───────────┘
+             │
+             ▼
+   ┌─────────────────────┐
+   │ GitHub Releases     │
+   │ (versioned .xlam)   │
+   └─────────┬───────────┘
+             │
+     CI/CD or IT rollout
+             │
+   ┌─────────▼───────────┐
+   │ User Environment    │
+   │  - Intune/SCCM or   │
+   │    PowerShell pulls │
+   │    latest .xlam     │
+   └─────────┬───────────┘
+             │
+             ▼
+   ┌─────────────────────┐
+   │ Excel Add-ins Menu  │
+   │  - .xlam enabled    │
+   │  - Loads on startup │
+   └─────────┬───────────┘
+             │
+             ▼
+   ┌─────────────────────┐
+   │ Analyst Workbook    │
+   │  - Opens any file   │
+   │  - Add-in available │
+   │    (macros, menus)  │
+   └─────────────────────┘

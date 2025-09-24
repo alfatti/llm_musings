@@ -16,14 +16,13 @@ from PIL import Image
 # 1) CONFIG
 # ----------------------------
 
-# You said you already have these:
-API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()  # or set it however you like
-MODEL_ENDPOINT = os.environ.get("GEMINI_MODEL_ENDPOINT", "").strip()
-# Example:
-# MODEL_ENDPOINT = "https://us-central-aiplatform.googleapis.com/v1/projects/<proj>/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_ENDPOINT = os.environ.get("GEMINI_ENDPOINT", "").strip()
+# Example (Vertex, text+vision generateContent):
+# GEMINI_ENDPOINT="https://us-central-aiplatform.googleapis.com/v1/projects/<proj>/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
 
-if not API_KEY or not MODEL_ENDPOINT:
-    raise RuntimeError("Set GEMINI_API_KEY and GEMINI_MODEL_ENDPOINT (full :generateContent URL).")
+if not GEMINI_API_KEY or not GEMINI_ENDPOINT:
+    raise RuntimeError("Set GEMINI_API_KEY and GEMINI_ENDPOINT (full :generateContent URL).")
 
 MAX_WORKERS = min(8, os.cpu_count() or 4)
 
@@ -34,9 +33,17 @@ ALLOWED_LABELS = [
     "Outstanding Balance",
 ]
 
+GENERATION_CONFIG = {
+    "temperature": 0.0,
+    "topP": 1.0,
+    "topK": 40,
+    "maxOutputTokens": 1024,
+    "responseMimeType": "application/json",
+}
+
 
 # ----------------------------
-# 2) PDF -> PAGE IMAGES (pdf2image)
+# 2) PDF -> PAGE IMAGES
 # ----------------------------
 
 def pdf_to_images(pdf_path: str, dpi: int = 220) -> List[Image.Image]:
@@ -44,7 +51,7 @@ def pdf_to_images(pdf_path: str, dpi: int = 220) -> List[Image.Image]:
 
 
 # ----------------------------
-# 3) PROMPT
+# 3) PROMPTS
 # ----------------------------
 
 SYSTEM_INSTRUCTIONS = f"""\
@@ -90,41 +97,21 @@ Task: Find 'Outstanding Loan Balance (OLB)' value on THIS page and return JSON e
 
 
 # ----------------------------
-# 4) REST CLIENT (Vertex AI)
+# 4) LOW-LEVEL IMAGE & REST CALL
 # ----------------------------
 
-HEADERS = {
-    # Either use API key as header...
-    "x-goog-api-key": API_KEY,
-    # ...or append ?key=API_KEY to the URL instead (shown below in _post()).
-    "Content-Type": "application/json; charset=utf-8",
-}
+def image_to_base64(img: Image.Image, fmt: str = "PNG") -> str:
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
-GENERATION_CONFIG = {
-    "temperature": 0.0,
-    "topP": 1.0,
-    "topK": 40,
-    "maxOutputTokens": 1024,
-    "responseMimeType": "application/json",
-}
-
-def _b64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")
-
-def _post(payload: Dict[str, Any]) -> Dict[str, Any]:
-    # You can pass the API key either via header (above) or query param.
-    url = f"{MODEL_ENDPOINT}?key={API_KEY}"
-    resp = requests.post(url, headers=HEADERS, data=json.dumps(payload), timeout=120)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Vertex AI error {resp.status_code}: {resp.text}")
-    return resp.json()
-
-def call_gemini_rest(prompt_text: str, image_bytes: bytes) -> str:
+def extract_from_image(img: Image.Image, user_prompt: str) -> str:
     """
-    Calls Vertex AI's :generateContent via REST with a single image and prompt.
-    Returns the model text (expected to be JSON per our instructions).
+    Your requested pattern: build request body, POST via requests, return the model's text.
     """
-    payload = {
+    image_b64 = image_to_base64(img, fmt="PNG")
+
+    request_body = {
         "systemInstruction": {
             "role": "system",
             "parts": [{"text": SYSTEM_INSTRUCTIONS}],
@@ -134,46 +121,33 @@ def call_gemini_rest(prompt_text: str, image_bytes: bytes) -> str:
             {
                 "role": "user",
                 "parts": [
-                    {"text": prompt_text},
-                    {
-                        "inlineData": {
-                            "mimeType": "image/png",
-                            "data": _b64(image_bytes),
-                        }
-                    },
+                    {"text": user_prompt},
+                    {"inlineData": {"mimeType": "image/png", "data": image_b64}},
                 ],
             }
         ],
     }
 
-    data = _post(payload)
-    # Response shape: candidates[0].content.parts[0].text
-    try:
-        candidates = data.get("candidates", [])
-        parts = (
-            candidates[0]
-            .get("content", {})
-            .get("parts", [])
-        )
-        text = parts[0].get("text", "") if parts else ""
-        return text
-    except Exception:
-        # If the model used "promptFeedback" or other structure, surface it:
-        return json.dumps(data)
+    headers = {
+        "Authorization": f"Bearer {GEMINI_API_KEY}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+
+    resp = requests.post(GEMINI_ENDPOINT, headers=headers, json=request_body, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Typical Vertex response path: candidates[0].content.parts[0].text
+    candidates = data.get("candidates", [])
+    parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+    text = parts[0].get("text", "") if parts else ""
+
+    # In case a different structure returns, just give back the raw JSON string
+    return text or json.dumps(data)
 
 
 # ----------------------------
-# 5) UTIL
-# ----------------------------
-
-def pil_image_to_bytes(img: Image.Image, fmt="PNG") -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, format=fmt)
-    return buf.getvalue()
-
-
-# ----------------------------
-# 6) PER-PAGE CALL/RESULT
+# 5) PER-PAGE WRAPPER
 # ----------------------------
 
 @dataclass
@@ -192,10 +166,10 @@ class PageResult:
 
 def call_llm_on_page(img: Image.Image, page_index: int) -> PageResult:
     try:
-        image_bytes = pil_image_to_bytes(img, fmt="PNG")
         prompt = build_user_prompt(page_index)
+        text = (extract_from_image(img, prompt) or "").strip()
 
-        text = (call_gemini_rest(prompt, image_bytes) or "").strip()
+        # Strip accidental fences
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
@@ -224,7 +198,7 @@ def call_llm_on_page(img: Image.Image, page_index: int) -> PageResult:
 
 
 # ----------------------------
-# 7) ORCHESTRATION
+# 6) ORCHESTRATION
 # ----------------------------
 
 def find_olb_in_pdf(pdf_path: str, max_workers: int = MAX_WORKERS) -> Dict[str, Any]:
@@ -264,7 +238,7 @@ def find_olb_in_pdf(pdf_path: str, max_workers: int = MAX_WORKERS) -> Dict[str, 
 
 
 # ----------------------------
-# 8) CLI
+# 7) CLI
 # ----------------------------
 
 if __name__ == "__main__":

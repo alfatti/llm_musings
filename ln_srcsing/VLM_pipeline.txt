@@ -1,0 +1,55 @@
++-------------------+
+| Excel Loan Sheet  |
++-------------------+
+          |
+          v
++---------------------------+
+| Print / Export to PDF     |
+| - Chunk sheet (Z order)   |
+| - Include grid + headers  |
++---------------------------+
+          |
+          v
++-------------------+
+| PDF Pages         |
++-------------------+
+          |
+          v
++-------------------+
+| Convert to Images |
+| (pdf2image)       |
++-------------------+
+          |
+          v
++---------------------------+
+| Gemini VLM Pipeline       |
+| - Build prompt (schema    |
+|   hints: sections,        |
+|   sub-sections, line-items)|
+| - Attach page image       |
+| - REST call to Gemini     |
++---------------------------+
+          |
+          v
++---------------------------+
+| VLM Response (per page)   |
+| - Value text              |
+| - Cell coordinate (e.g. N23)|
+| - Confidence + evidence   |
++---------------------------+
+          |
+          v
++---------------------------+
+| Aggregation & Selection   |
+| - Compare pages           |
+| - Pick best result        |
+| - Audit trail             |
++---------------------------+
+          |
+          v
++-------------------+
+| Final Output      |
+| - Value           |
+| - Coordinate      |
+| - Page index      |
++-------------------+

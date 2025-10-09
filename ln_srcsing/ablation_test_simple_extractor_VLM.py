@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Basel Risk Input Extractor (single variable, one-page PDF -> Gemini 2.5 Pro via Apigee)
+Basel Risk Input Extractor (Gemini 2.5 Pro via Apigee)
+Now includes request_id and correlation_id for full observability.
 
-Features
-- PDF -> image (configurable DPI; default 300) for better VLM OCR/reading.
-- Prompt constructed from:
-   * variable_name (target),
-   * pointers: Section (often a column header), Sub-section (vertical cue), Line-item (horizontal cue),
-   * previous_cell_hint (e.g., "M66") + "vicinity" window (vertical bias).
-- Strict JSON schema requested from the model; robust JSON parsing with recovery.
-- Apigee: uses an existing access token plus consumer key/secret headers.
-
-Requirements
+Requirements:
     pip install pdf2image pillow pydantic requests
-Plus: poppler must be available on PATH for pdf2image.
 """
 
 import base64
@@ -24,13 +15,14 @@ import os
 import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
 from pdf2image import convert_from_path
 from PIL import Image
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 # ---------------------------
@@ -42,7 +34,6 @@ class Coordinates(BaseModel):
     y: Optional[float] = None
     w: Optional[float] = None
     h: Optional[float] = None
-    # Coordinates are optional; model may provide rough pixel bbox on the page image.
 
 class Evidence(BaseModel):
     section: Optional[str] = None
@@ -64,174 +55,107 @@ class ExtractionResult(BaseModel):
 
 
 # ---------------------------
-# PDF -> Image (Base64)
+# PDF → Image (Base64)
 # ---------------------------
 
-def pdf_to_base64_image(pdf_path: str, dpi: int = 300, max_width: Optional[int] = 2200) -> str:
-    """
-    Convert a SINGLE-page PDF to a base64-encoded PNG. Default DPI=300 (good balance for VLM).
-    Optionally downscale to max_width to avoid overly huge payloads.
-    """
+def pdf_to_base64_image(pdf_path: str, dpi: int = 300, max_width: int = 2200) -> str:
     images = convert_from_path(pdf_path, dpi=dpi)
     if not images:
         raise ValueError("No pages found in PDF.")
     if len(images) > 1:
-        # We proceed with the first page but warn.
-        print("[WARN] PDF has multiple pages; using the first page only for this extractor.", file=sys.stderr)
-    img: Image.Image = images[0].convert("RGB")
+        print("[WARN] Multi-page PDF detected; using first page.", file=sys.stderr)
+    img = images[0].convert("RGB")
 
-    if max_width and img.width > max_width:
+    if img.width > max_width:
         ratio = max_width / float(img.width)
-        new_size = (max_width, int(img.height * ratio))
-        img = img.resize(new_size, resample=Image.LANCZOS)
+        img = img.resize((max_width, int(img.height * ratio)), resample=Image.LANCZOS)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
 
 
 # ---------------------------
-# Excel cell helpers
+# Excel Cell Helpers
 # ---------------------------
-
-_COLS = {chr(c): (c - 64) for c in range(65, 91)}  # 'A'->1 ... 'Z'->26
 
 def excel_col_to_num(col: str) -> int:
-    col = col.upper().strip()
     total = 0
-    for ch in col:
-        if ch < 'A' or ch > 'Z':
-            raise ValueError(f"Invalid column letter: {col}")
-        total = total * 26 + _COLS[ch]
+    for c in col.upper():
+        total = total * 26 + (ord(c) - 64)
     return total
 
 def excel_cell_to_rc(cell: str) -> Dict[str, int]:
-    """
-    Convert Excel cell like 'M66' -> {'row': 66, 'col': 13}
-    """
     m = re.fullmatch(r"\s*([A-Za-z]+)\s*([0-9]+)\s*", cell)
     if not m:
-        raise ValueError(f"Invalid Excel cell reference: {cell}")
-    col_letters, row_str = m.group(1), m.group(2)
-    return {"row": int(row_str), "col": excel_col_to_num(col_letters)}
+        raise ValueError(f"Invalid cell reference: {cell}")
+    return {"row": int(m.group(2)), "col": excel_col_to_num(m.group(1))}
 
 
 # ---------------------------
-# Prompt construction
+# Prompt Builders
 # ---------------------------
 
 def build_system_prompt() -> str:
     return (
         "You are a meticulous financial document VLM assistant. "
-        "You read a one-page image of a spreadsheet-like report (pdf export) and extract a SINGLE requested variable. "
-        "Rows represent loans and can shift between versions; column headers may act as 'Sections'. "
-        "Use the caller-supplied name pointers:\n"
-        "- Section (often a column header text or top-of-column label),\n"
-        "- Sub-section (vertical positional cue within a column group), and\n"
-        "- Line item (horizontal cue within that row or nearby rows).\n\n"
-        "You are ALSO given a prior Excel cell hint (e.g., 'M66') from the last version of this report. "
-        "Search the 'vicinity' of that cell with a VERTICAL bias first (neighboring rows), and a light HORIZONTAL bias if needed. "
-        "If the exact value moved rows this version, it's likely within a few rows above/below. "
-        "If columns shifted, look modestly left/right.\n\n"
-        "OUTPUT STRICTLY the JSON schema provided in the user instructions. No extra keys, no extra text."
+        "You analyze a one-page spreadsheet (PDF export) and extract a single requested variable. "
+        "Rows represent loans that may shift between versions; column headers act as sections. "
+        "Use given name pointers and the previous cell location for vicinity search. "
+        "Return only JSON according to the schema provided."
     )
-
-def build_user_prompt(
-    variable_name: str,
-    pointers: Dict[str, Optional[str]],
-    previous_cell_hint: str,
-    vertical_window: int = 4,
-    horizontal_window: int = 1,
-    output_schema_text: str = ""
-) -> str:
-    """
-    pointers: {
-        'section': '...',        # often column name
-        'sub_section': '...',    # vertical cue
-        'line_item': '...'       # horizontal cue
-    }
-    """
-    sec = pointers.get("section") or ""
-    sub = pointers.get("sub_section") or ""
-    li  = pointers.get("line_item") or ""
-
-    rc = excel_cell_to_rc(previous_cell_hint)
-    vicinity_desc = (
-        f"Vicinity search (VERTICAL first): within ±{vertical_window} rows of row {rc['row']}; "
-        f"if needed HORIZONTAL within ±{horizontal_window} columns of column index {rc['col']}. "
-        f"(Previous cell hint: '{previous_cell_hint}')"
-    )
-
-    # Concrete instructions to enforce JSON only
-    extraction_instructions = f"""
-Task:
-- Extract the variable: "{variable_name}".
-
-Name Pointers (for localization):
-- Section (column-like): "{sec}"
-- Sub-section (vertical cue): "{sub}"
-- Line item (horizontal cue): "{li}"
-
-Heuristic:
-- Prefer vertical scanning near the prior cell location; only adjust columns slightly if needed.
-- If multiple candidates are visible, pick the one that best matches ALL the given name pointers.
-- Return both the raw text value and a numeric version if applicable (e.g., '12,345.67' -> 12345.67).
-- Provide a short evidence snapshot (few words) and your nearest-cell guess (e.g., 'M67' if you can infer it).
-
-STRICT JSON OUTPUT ONLY:
-Use exactly this schema (no extra fields, no commentary):
-{output_schema_text}
-"""
-
-    return f"{vicinity_desc}\n\n{extraction_instructions}".strip()
-
 
 def json_schema_text_for_model() -> str:
-    """
-    Text version of the JSON schema for the model to follow.
-    """
     return """{
-  "variable": string,              // the requested variable name echoed back
-  "value_text": string or null,    // the value exactly as seen (raw text)
-  "value_numeric": number or null, // parsed numeric if applicable, else null
-  "unit": string or null,          // e.g., '%', 'USD', 'bps', or null
-  "found": boolean,                // true if you found the value confidently
+  "variable": string,
+  "value_text": string or null,
+  "value_numeric": number or null,
+  "unit": string or null,
+  "found": boolean,
   "evidence": {
-    "section": string or null,         // which section text you used (if any)
-    "sub_section": string or null,     // sub-section text used (if any)
-    "line_item": string or null,       // line-item text used (if any)
-    "cell_text_snapshot": string or null, // a short literal snippet near the value
-    "nearest_cell_guess": string or null, // e.g., 'M67' if you can infer
-    "coordinates": {
-      "x": number or null,
-      "y": number or null,
-      "w": number or null,
-      "h": number or null
-    } or null
+    "section": string or null,
+    "sub_section": string or null,
+    "line_item": string or null,
+    "cell_text_snapshot": string or null,
+    "nearest_cell_guess": string or null,
+    "coordinates": {"x": number or null,"y": number or null,"w": number or null,"h": number or null} or null
   } or null,
-  "confidence": number or null,    // 0.0-1.0 (your subjective confidence)
-  "notes": string or null          // brief notes if needed
+  "confidence": number or null,
+  "notes": string or null
 }"""
+
+def build_user_prompt(variable_name: str, pointers: Dict[str, Optional[str]],
+                      previous_cell_hint: str, vertical_window: int,
+                      horizontal_window: int, output_schema_text: str) -> str:
+    rc = excel_cell_to_rc(previous_cell_hint)
+    return f"""
+Variable: {variable_name}
+Section: {pointers.get("section")}
+Sub-section: {pointers.get("sub_section")}
+Line item: {pointers.get("line_item")}
+
+Heuristic: Search within ±{vertical_window} rows (vertical bias) and ±{horizontal_window} columns (horizontal bias)
+around previous cell {previous_cell_hint} (R{rc['row']},C{rc['col']}).
+
+Output JSON only:
+{output_schema_text}
+""".strip()
 
 
 # ---------------------------
-# Gemini (via Apigee) call
+# Apigee Config and Call
 # ---------------------------
 
 @dataclass
 class ApigeeConfig:
-    base_url: str               # e.g., "https://<your-apigee-host>/v1/projects/<proj>/locations/<loc>/publishers/google/models/gemini-2.5-pro:generateContent"
+    base_url: str
     consumer_key: str
     consumer_secret: str
-    access_token: str           # already obtained as per user
+    access_token: str
 
 
-def build_gemini_request_payload(image_b64: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    """
-    Gemini 2.5 (multimodal): content list containing text and image parts.
-    Adjust if your Apigee endpoint expects strictly Vertex AI wire format vs. Generative Language API.
-    """
+def build_gemini_payload(image_b64: str, system_prompt: str, user_prompt: str,
+                         request_id: str, correlation_id: str) -> Dict[str, Any]:
     return {
         "contents": [
             {
@@ -247,159 +171,85 @@ def build_gemini_request_payload(image_b64: str, system_prompt: str, user_prompt
             "temperature": 0.2,
             "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 1024
+            "max_output_tokens": 1024,
+            "metadata": {
+                "request_id": request_id,
+                "correlation_id": correlation_id
+            }
         },
         "safety_settings": []
     }
 
 
-def call_gemini(apigee_cfg: ApigeeConfig, payload: Dict[str, Any], timeout: int = 60) -> Dict[str, Any]:
+def call_gemini(apigee_cfg: ApigeeConfig, payload: Dict[str, Any],
+                request_id: str, correlation_id: str, timeout: int = 60) -> Dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {apigee_cfg.access_token}",
         "Content-Type": "application/json",
-        # Apigee gateways often accept either x-api-key or similar headers.
-        # Include both key/secret if your proxy expects them.
         "x-api-key": apigee_cfg.consumer_key,
         "x-api-secret": apigee_cfg.consumer_secret,
+        "x-request-id": request_id,
+        "x-correlation-id": correlation_id,
     }
-    resp = requests.post(apigee_cfg.base_url, headers=headers, data=json.dumps(payload), timeout=timeout)
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Apigee/Gemini request failed: {resp.status_code} {resp.text}")
-    return resp.json()
+    r = requests.post(apigee_cfg.base_url, headers=headers, json=payload, timeout=timeout)
+    if r.status_code >= 400:
+        raise RuntimeError(f"API error {r.status_code}: {r.text}")
+    return r.json()
 
 
-def extract_text_from_gemini_response(resp: Dict[str, Any]) -> str:
-    """
-    Try the common response layouts. Adjust if your Apigee proxy wraps differently.
-    """
-    # Generative Language API style:
+# ---------------------------
+# JSON Utilities
+# ---------------------------
+
+def extract_text_from_response(resp: Dict[str, Any]) -> str:
     try:
         candidates = resp["candidates"]
-        parts = candidates[0]["content"]["parts"]
-        texts = [p.get("text", "") for p in parts if "text" in p]
-        return "\n".join(t for t in texts if t).strip()
+        return "\n".join(p["text"] for p in candidates[0]["content"]["parts"] if "text" in p).strip()
     except Exception:
-        pass
-
-    # Vertex-style proxy variants:
-    try:
-        safety = resp.get("promptFeedback")  # ignore
-        # Some proxies return { "candidates":[{"content":{"parts":[{"text":"..."}]} }] }
-        # Already handled above; otherwise check a direct "text" field:
-        if "text" in resp:
-            return str(resp["text"]).strip()
-    except Exception:
-        pass
-
-    # Raw fallback:
-    return json.dumps(resp)
-
-
-# ---------------------------
-# JSON Parsing (robust)
-# ---------------------------
+        return json.dumps(resp)
 
 def recover_json_block(s: str) -> Optional[str]:
-    """
-    Extract the first plausible {...} block. Handles leading/trailing commentary.
-    """
-    # Look for the first '{' and last '}' to form a block:
-    start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    block = s[start:end+1]
-    return block
+    start, end = s.find("{"), s.rfind("}")
+    return s[start:end+1] if start >= 0 and end > start else None
 
 def parse_extraction_json(s: str) -> ExtractionResult:
-    """
-    Attempt strict parse, then recovery if needed.
-    """
-    # First try direct:
     try:
         return ExtractionResult.model_validate_json(s)
     except Exception:
-        pass
-
-    # Try to pull a JSON block:
-    block = recover_json_block(s)
-    if block:
-        # Remove dangerous trailing commas using a light regex (does not fix all issues but helps).
+        block = recover_json_block(s)
+        if not block:
+            raise ValueError(f"Cannot parse JSON: {s}")
         cleaned = re.sub(r",\s*([}\]])", r"\1", block)
-        try:
-            return ExtractionResult.model_validate_json(cleaned)
-        except ValidationError as ve:
-            # Show partial error for debugging
-            raise ve
-        except Exception:
-            # Last attempt: load as dict then validate
-            try:
-                data = json.loads(cleaned)
-                return ExtractionResult.model_validate(data)
-            except Exception as e2:
-                raise ValueError(f"Failed to parse JSON after cleanup. Raw text:\n{s}\n\nError: {e2}") from e2
-
-    # Nothing worked
-    raise ValueError(f"Model did not return JSON. Raw text:\n{s}")
+        return ExtractionResult.model_validate_json(cleaned)
 
 
 # ---------------------------
-# High-level API
+# Core Function
 # ---------------------------
 
-def extract_variable_from_pdf(
-    pdf_path: str,
-    variable_name: str,
-    pointers: Dict[str, Optional[str]],
-    previous_cell_hint: str,
-    apigee_base_url: str,
-    apigee_consumer_key: str,
-    apigee_consumer_secret: str,
-    apigee_access_token: str,
-    dpi: int = 300,
-    vertical_window: int = 4,
-    horizontal_window: int = 1,
-    max_width: Optional[int] = 2200,
-) -> ExtractionResult:
-    img_b64 = pdf_to_base64_image(pdf_path, dpi=dpi, max_width=max_width)
+def extract_variable_from_pdf(pdf_path: str, variable_name: str,
+    pointers: Dict[str, Optional[str]], previous_cell_hint: str,
+    apigee_cfg: ApigeeConfig, dpi: int = 300,
+    vertical_window: int = 4, horizontal_window: int = 1,
+    correlation_id: Optional[str] = None) -> ExtractionResult:
 
-    system_prompt = build_system_prompt()
-    schema_text = json_schema_text_for_model()
-    user_prompt = build_user_prompt(
-        variable_name=variable_name,
-        pointers=pointers,
-        previous_cell_hint=previous_cell_hint,
-        vertical_window=vertical_window,
-        horizontal_window=horizontal_window,
-        output_schema_text=schema_text
-    )
+    # UUIDs
+    request_id = str(uuid.uuid4())
+    correlation_id = correlation_id or str(uuid.uuid4())
+    print(f"[INFO] request_id={request_id}, correlation_id={correlation_id}")
 
-    apigee_cfg = ApigeeConfig(
-        base_url=apigee_base_url,
-        consumer_key=apigee_consumer_key,
-        consumer_secret=apigee_consumer_secret,
-        access_token=apigee_access_token
-    )
+    image_b64 = pdf_to_base64_image(pdf_path, dpi=dpi)
+    sys_prompt = build_system_prompt()
+    schema = json_schema_text_for_model()
+    user_prompt = build_user_prompt(variable_name, pointers, previous_cell_hint,
+                                    vertical_window, horizontal_window, schema)
 
-    payload = build_gemini_request_payload(img_b64, system_prompt, user_prompt)
+    payload = build_gemini_payload(image_b64, sys_prompt, user_prompt,
+                                   request_id, correlation_id)
 
-    # Basic retry for transient issues / JSON hiccups
-    last_text = ""
-    for attempt in range(3):
-        try:
-            resp = call_gemini(apigee_cfg, payload)
-            last_text = extract_text_from_gemini_response(resp)
-            result = parse_extraction_json(last_text)
-            return result
-        except Exception as e:
-            if attempt == 2:
-                raise
-            sleep_s = 1.5 * (attempt + 1)
-            print(f"[WARN] Attempt {attempt+1} failed ({e}); retrying in {sleep_s:.1f}s...", file=sys.stderr)
-            time.sleep(sleep_s)
-
-    # Should not reach here
-    raise RuntimeError(f"Failed after retries. Last model text:\n{last_text}")
+    raw_resp = call_gemini(apigee_cfg, payload, request_id, correlation_id)
+    raw_text = extract_text_from_response(raw_resp)
+    return parse_extraction_json(raw_text)
 
 
 # ---------------------------
@@ -408,23 +258,26 @@ def extract_variable_from_pdf(
 
 def _cli():
     import argparse
-
-    parser = argparse.ArgumentParser(description="Extract a Basel risk input from a one-page PDF using Gemini 2.5 Pro via Apigee.")
-    parser.add_argument("--pdf", required=True, help="Path to one-page PDF (exported from Excel).")
-    parser.add_argument("--variable", required=True, help='Variable name to extract (e.g., "Risk-Weighted Assets").')
-    parser.add_argument("--section", default="", help="Section / Column-name pointer (optional).")
-    parser.add_argument("--sub_section", default="", help="Sub-section (vertical) pointer (optional).")
-    parser.add_argument("--line_item", default="", help="Line-item (horizontal) pointer (optional).")
-    parser.add_argument("--prev_cell", required=True, help='Previous version cell hint (e.g., "M66").')
-    parser.add_argument("--apigee_base_url", required=True, help="Full Apigee model endpoint URL for generateContent.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--variable", required=True)
+    parser.add_argument("--section", default="")
+    parser.add_argument("--sub_section", default="")
+    parser.add_argument("--line_item", default="")
+    parser.add_argument("--prev_cell", required=True)
+    parser.add_argument("--apigee_base_url", required=True)
     parser.add_argument("--apigee_consumer_key", required=True)
     parser.add_argument("--apigee_consumer_secret", required=True)
     parser.add_argument("--apigee_access_token", required=True)
-    parser.add_argument("--dpi", type=int, default=300, help="PDF render DPI (default: 300).")
-    parser.add_argument("--vwin", type=int, default=4, help="Vertical vicinity window in rows (default: 4).")
-    parser.add_argument("--hwin", type=int, default=1, help="Horizontal vicinity window in columns (default: 1).")
-    parser.add_argument("--max_width", type=int, default=2200, help="Downscale max width in px (default: 2200).")
+    parser.add_argument("--corr_id", default=None)
     args = parser.parse_args()
+
+    apigee_cfg = ApigeeConfig(
+        base_url=args.apigee_base_url,
+        consumer_key=args.apigee_consumer_key,
+        consumer_secret=args.apigee_consumer_secret,
+        access_token=args.apigee_access_token
+    )
 
     pointers = {
         "section": args.section or None,
@@ -432,22 +285,15 @@ def _cli():
         "line_item": args.line_item or None
     }
 
-    result = extract_variable_from_pdf(
+    res = extract_variable_from_pdf(
         pdf_path=args.pdf,
         variable_name=args.variable,
         pointers=pointers,
         previous_cell_hint=args.prev_cell,
-        apigee_base_url=args.apigee_base_url,
-        apigee_consumer_key=args.apigee_consumer_key,
-        apigee_consumer_secret=args.apigee_consumer_secret,
-        apigee_access_token=args.apigee_access_token,
-        dpi=args.dpi,
-        vertical_window=args.vwin,
-        horizontal_window=args.hwin,
-        max_width=args.max_width,
+        apigee_cfg=apigee_cfg,
+        correlation_id=args.corr_id
     )
-
-    print(result.model_dump_json(indent=2))
+    print(json.dumps(res.model_dump(), indent=2))
 
 
 if __name__ == "__main__":

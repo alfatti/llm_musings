@@ -181,3 +181,41 @@ try:
 except Exception:
     parsed = coerce_json_from_text(raw_text)           # <— fallback if model ignored pipe format
 
+#################################################################################
+user_text: Dict[str, Any] = {
+    "task": "Extract the variable: '{}'.".format(variable_name),
+    "name_pointers": {
+        "section_variants": section_variants,
+        "subsection_variants": subsection_variants,
+        "line_item_variants": line_item_variants,
+        "notes": "Variants come from prior reports; use fuzzy matching and layout cues.",
+    },
+    "cell_hint_and_vicinity": vicinity_desc,
+    "layout_prior": (
+        "Rows usually correspond to loans and can shift between versions. "
+        "Bias vertical scanning near the hint row; then sweep limited columns horizontally."
+    ),
+    "value_rules": [
+        "Return the value exactly as seen (verbatim), without normalization.",
+        "Exclude footnote markers/superscripts from the value.",
+    ],
+    "tie_breakers": [
+        "Prefer matches where section/sub-section/line-item cues align.",
+        "If multiple, choose the one nearest the hint row.",
+    ],
+
+    # 👇 👇 this is the key addition
+    "REQUIRED_OUTPUT": (
+        "Return exactly ONE line of plain text. "
+        "No markdown, no quotes, no code fences. "
+        "Format strictly as:\n"
+        "<variable>|<value_text>|<detected_cell or NULL>\n\n"
+        "Examples:\n"
+        "Risk Weight|45%|M66\n"
+        "Cash Interest|123,456|NULL\n\n"
+        "Rules:\n"
+        "- Do not print anything else.\n"
+        "- Escape '|' inside value_text as '\\|'.\n"
+        "- Keep it all on one line."
+    ),
+}

@@ -542,3 +542,100 @@ except Exception:
         extra_headers=headers,
     )
 
+########################
+# 3)replace your current build_prompt(...) with this simpler version (identical args, same return), and you’re done.
+# Everything else in your script can stay as-is (including your hardened coerce_json_from_text).
+from typing import Optional, List, Tuple, Dict, Any
+
+def build_prompt(
+    variable_name: str,
+    section_variants: List[str],
+    subsection_variants: List[str],
+    line_item_variants: List[str],
+    cell_hint: Optional[str],
+    vicinity_rows: int,
+    vicinity_cols: int,
+) -> Tuple[str, Dict[str, Any]]:
+    # Reuse your helper to parse e.g., "M66"
+    col_letters, hint_row, hint_col_idx = parse_cell(cell_hint) if cell_hint else (None, None, None)
+
+    # Describe the vicinity strategy (still helpful for accuracy, even though schema is minimal)
+    vicinity_desc: Dict[str, Any] = {
+        "bias": "vertical-first",
+        "rows_to_check_above": vicinity_rows,
+        "rows_to_check_below": vicinity_rows,
+        "cols_to_check_left": vicinity_cols,
+        "cols_to_check_right": vicinity_cols,
+        "cell_hint": cell_hint or "UNKNOWN",
+        "parsed_hint": {
+            "column_letters": col_letters,
+            "row_index": hint_row,
+            "column_index_1_based": hint_col_idx,
+        },
+    }
+
+    # Minimal schema — ONLY the three fields
+    schema: Dict[str, Any] = {
+        "type": "object",
+        "required": ["variable", "value_text", "detected_cell"],
+        "properties": {
+            "variable": {"type": "string"},
+            "value_text": {"type": "string"},
+            "detected_cell": {"type": ["string", "null"]},
+        },
+        "additionalProperties": False
+    }
+
+    system_text: str = (
+        "You are a precise financial document vision assistant. "
+        "You inspect a single-page image of a spreadsheet exported to PDF and extract exactly one requested variable. "
+        "Return STRICT JSON ONLY that matches the provided schema. Do not include markdown, commentary, or code fences."
+    )
+
+    user_text: Dict[str, Any] = {
+        "task": "Extract the variable: '{}'.".format(variable_name),
+        "how_to_find_it": {
+            "name_pointers": {
+                "section_variants": section_variants,
+                "subsection_variants": subsection_variants,
+                "line_item_variants": line_item_variants,
+                "notes": (
+                    "These are label variants from prior reports. Use fuzzy matching and layout/typography cues. "
+                    "If 'Section' appears as a column header in this layout, treat it accordingly."
+                ),
+            },
+            "cell_hint_and_vicinity": vicinity_desc,
+            "layout_prior": (
+                "Rows typically correspond to loans and can shift between report versions. "
+                "Prioritize vertical scanning near the hint row; if not found, sweep horizontally within the given column window."
+            ),
+            "value_rules": [
+                "Return the value exactly as it appears (verbatim); do not normalize or reformat.",
+                "Exclude footnote markers/superscripts from value_text.",
+            ],
+            "tie_breakers": [
+                "Prefer a match where the section/sub-section/line-item cues align best.",
+                "If multiple candidates remain, pick the one closest to the hint row.",
+            ],
+        },
+        "output_schema": schema,
+        "formatting": "Return STRICT JSON ONLY (no markdown code fences, no backticks, no extra text).",
+        "example_output": {
+            "variable": variable_name,
+            "value_text": "e.g., 45%",
+            "detected_cell": "e.g., M66"
+        }
+    }
+
+    return system_text, user_text
+
+
+# ##################################################
+# (Optional) Tighten decoding
+# Since the schema is tiny, you can add a quick post-parse sanity check right after parsed = coerce_json_from_text(raw_text):
+
+# Minimal sanity guard
+for k in ("variable", "value_text", "detected_cell"):
+    if k not in parsed:
+        raise ValueError(f"Model output missing '{k}': {parsed}")
+

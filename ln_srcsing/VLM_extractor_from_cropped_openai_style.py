@@ -523,117 +523,22 @@ def coerce_json_from_text(text: Optional[str]) -> Dict[str, Any]:
 # 2) (Optional) Nudge the API to return JSON
 # In your call_gemini_openai_style(...), change the call to:
 ##################################################################
-import json, re
-from typing import Optional, Dict, Any, List
-
-def _strip_code_fences(text: str) -> str:
-    # remove ```json ... ``` or ``` ... ``` fences
-    text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text.strip())
-    return text
-
-def _find_fenced_json(text: str) -> Optional[str]:
-    m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-    if m:
-        return m.group(1)
-    m = re.search(r"```\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    if m:
-        return m.group(1)
-    return None
-
-def _extract_first_json_object(text: str) -> Optional[str]:
-    """
-    Scan char-by-char, track string/escape/braces, return first balanced {...}.
-    Robust to stray braces inside quoted strings.
-    """
-    in_string = False
-    escape = False
-    depth = 0
-    start = None
-    for i, ch in enumerate(text):
-        if start is None:
-            if ch == "{":
-                start = i
-                depth = 1
-            continue
-
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start:i+1]
-        # continue scanning
-    return None
-
-def _repair_minimal(s: str) -> str:
-    # 1) remove trailing commas before } or ]
-    s = re.sub(r",\s*([}\]])", r"\1", s)
-    # 2) normalize smart quotes to ASCII
-    s = s.replace("“", '"').replace("”", '"').replace("’", "'")
-    # 3) convert single-quoted keys to double-quoted (best-effort)
-    s = re.sub(r'(\{|,)\s*\'([^\'"]+)\'\s*:', r'\1 "\2":', s)
-    # 4) convert single-quoted string values to double-quoted (best-effort)
-    s = re.sub(r':\s*\'([^\'"]*)\'\s*([,}])', r': "\1"\2', s)
-    return s
-
-def _last_resort_cleanup(s: str) -> str:
-    # Sometimes models inject stray backticks or unmatched quotes.
-    s = s.replace("`", "")
-    # Collapse CRLFs inside strings-ish contexts (very conservative)
-    s = re.sub(r'"\s*\n\s*"', '" "', s)
-    return s
-
-def coerce_json_from_text(text: Optional[str]) -> Dict[str, Any]:
-    if text is None:
-        raise ValueError("Empty completion text.")
-
-    # 0) direct fenced capture first
-    fenced = _find_fenced_json(text)
-    if fenced:
-        try:
-            return json.loads(fenced)
-        except Exception:
-            pass  # fall through
-
-    # 1) strip fences and try raw
-    raw = _strip_code_fences(text)
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-
-    # 2) extract first balanced {...}
-    candidate = _extract_first_json_object(raw)
-    if candidate:
-        # 2a) try raw candidate
-        try:
-            return json.loads(candidate)
-        except Exception:
-            # 2b) try minimal repairs
-            repaired = _repair_minimal(candidate)
-            try:
-                return json.loads(repaired)
-            except Exception:
-                # 2c) last resort cleanup
-                repaired2 = _last_resort_cleanup(repaired)
-                return json.loads(repaired2)
-
-    # 3) as a final fallback, apply repairs to whole text
-    repaired = _repair_minimal(raw)
-    try:
-        return json.loads(repaired)
-    except Exception:
-        repaired2 = _last_resort_cleanup(repaired)
-        return json.loads(repaired2)
+try:
+    resp = openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},  # may be supported by your proxy
+        extra_headers=headers,
+    )
+except Exception:
+    # Fallback if response_format is not supported by the Apigee proxy
+    resp = openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        extra_headers=headers,
+    )
 

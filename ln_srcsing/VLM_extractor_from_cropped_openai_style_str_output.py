@@ -98,4 +98,86 @@ except Exception:
     # Fallbacks: try robust JSON (in case the model ignored instructions)
     parsed = coerce_json_from_text(raw_text)
 
+###########################################################################
+import re
+from typing import Optional, Dict, Any, List, Tuple
+
+CELL_RX = re.compile(r"^[A-Za-z]{1,3}\s*\d{1,5}$")
+
+def _strip_fences_and_quotes(s: str) -> str:
+    s = s.strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    return s
+
+def _unescaped_pipe_positions(s: str) -> List[int]:
+    pos = []
+    esc = False
+    for i, ch in enumerate(s):
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '|':
+            pos.append(i)
+    return pos
+
+def _split_by_first_and_last_unescaped_pipe(line: str) -> Optional[Tuple[str, str, str]]:
+    line = _strip_fences_and_quotes(line)
+    positions = _unescaped_pipe_positions(line)
+    if len(positions) < 2:
+        return None
+    i, j = positions[0], positions[-1]     # allow value segment to contain pipes
+    left = line[:i]
+    mid  = line[i+1:j]
+    right= line[j+1:]
+    return left, mid, right
+
+def parse_pipe_line_robust(text: Optional[str]) -> Dict[str, Any]:
+    if not text:
+        raise ValueError("Empty completion text for pipe parsing.")
+
+    # Consider each non-empty line; prioritize those with >= 2 unescaped pipes
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    candidates = []
+    for ln in lines:
+        split3 = _split_by_first_and_last_unescaped_pipe(ln)
+        if split3:
+            candidates.append((ln, split3))
+
+    if not candidates:
+        raise ValueError(f"Pipe output did not have 3 fields in any line: {text[:300]}...")
+
+    # Prefer a line where the 3rd field looks like a cell or NULL
+    def score(c):
+        _ln, (v, val, cell) = c
+        cell_t = cell.strip().upper()
+        is_cell = bool(CELL_RX.match(cell_t))
+        is_null = (cell_t == "NULL")
+        return (1 if (is_cell or is_null) else 0)
+
+    ln, (variable, value_text, detected_cell) = sorted(candidates, key=score, reverse=True)[0]
+
+    # Unescape \| in value
+    value_text = value_text.replace("\\|", "|").strip()
+    variable = variable.strip()
+
+    cell = detected_cell.strip()
+    if cell.upper() == "NULL" or not CELL_RX.match(cell):
+        cell = None
+    else:
+        cell = cell.replace(" ", "")  # normalize like "M 66" -> "M66"
+
+    return {"variable": variable, "value_text": value_text, "detected_cell": cell}
+############################################################################
+raw_text, raw_resp = call_gemini_openai_style(...)
+
+try:
+    parsed = parse_pipe_line_robust(raw_text)          # <— primary
+except Exception:
+    parsed = coerce_json_from_text(raw_text)           # <— fallback if model ignored pipe format
 

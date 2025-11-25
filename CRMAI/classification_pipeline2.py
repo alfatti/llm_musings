@@ -112,47 +112,38 @@ def call_gemini_openai_style(
 
 # ---------- Simple, reasonably robust JSON parser ----------
 
-def coerce_json_from_text(text: Optional[str]) -> Dict[str, Any]:
-    """
-    Try to extract a JSON object from the model output.
-    - Strip code fences
-    - Try full string
-    - Try first {...} block
-    """
-    if text is None:
-        raise ValueError("Empty completion text.")
+import re
 
-    raw = text.strip()
-    # remove ```json ... ``` and ``` ... ```
-    raw = re.sub(r"```(?:json)?", "", raw, flags=re.IGNORECASE).replace("```", "").strip()
+def parse_classifier_output_text(raw_text: Optional[str]) -> Dict[str, Any]:
+    if not raw_text:
+        raise ValueError("Empty completion text from model.")
 
-    # Direct attempt
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
+    # Remove accidental fences
+    txt = raw_text.strip()
+    if txt.startswith("```"):
+        txt = txt.strip("`").strip()
 
-    # Try to extract first {...}
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end > start:
-        candidate = raw[start:end+1]
-        try:
-            return json.loads(candidate)
-        except Exception:
-            pass
+    # Extract lines
+    cat_match = re.search(r"^CATEGORY:\s*(.+)$", txt, flags=re.MULTILINE | re.IGNORECASE)
+    notes_match = re.search(r"^TASK_NOTES:\s*(.+)$", txt, flags=re.MULTILINE | re.IGNORECASE)
+    conf_match = re.search(r"^CONFIDENCE:\s*([0-9]*\.?[0-9]+)", txt, flags=re.MULTILINE | re.IGNORECASE)
 
-    # last attempt: basic replacements for smart quotes
-    cleaned = (
-        raw.replace("“", '"')
-           .replace("”", '"')
-           .replace("’", "'")
-           .replace("`", '"')
-    )
-    try:
-        return json.loads(cleaned)
-    except Exception as e:
-        raise ValueError(f"Could not parse JSON from model output: {e}\nRAW:\n{text}") from e
+    if not cat_match or not notes_match or not conf_match:
+        raise ValueError(f"Could not parse classifier output.\nRAW:\n{raw_text}")
+
+    category = cat_match.group(1).strip()
+    task_notes = notes_match.group(1).strip()
+    confidence = float(conf_match.group(1))
+
+    # Clamp confidence just in case
+    confidence = max(0.0, min(1.0, confidence))
+
+    return {
+        "category": category,
+        "task_notes": task_notes,
+        "confidence": confidence,
+    }
+
 
 # ---------- Few-shot prompt builder ----------
 
@@ -204,37 +195,24 @@ def build_prompt_for_email(
 ) -> Tuple[str, Dict[str, Any]]:
     """
     Returns (system_text, user_payload) for the classifier call.
-    The model is instructed to output STRICT JSON ONLY with:
-      { "category": "...", "task_notes": "...", "confidence": 0.0-1.0 }
+
+    Output format (STRICT):
+      CATEGORY: <category>
+      TASK_NOTES: <task_notes on ONE line>
+      CONFIDENCE: <float between 0 and 1>
+
+    No JSON, no markdown, no extra commentary.
     """
 
     system_text = (
         "You are an assistant that reads client servicing emails for a corporate banking middle office. "
         "Your job is to assign a case category and propose concise operational task notes. "
-        "Always respond in STRICT JSON only, with fields: category, task_notes, confidence."
+        "Always respond with exactly three lines:\n"
+        "CATEGORY: <category>\n"
+        'TASK_NOTES: <one-line task notes>\n'
+        "CONFIDENCE: <float between 0 and 1>\n"
+        "Do not include JSON, markdown, or any extra text."
     )
-
-    output_schema = {
-        "type": "object",
-        "required": ["category", "task_notes", "confidence"],
-        "properties": {
-            "category": {
-                "type": "string",
-                "description": "Predicted case category label, similar to the training examples."
-            },
-            "task_notes": {
-                "type": "string",
-                "description": "Concise instructions to the middle office on what to do."
-            },
-            "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1,
-                "description": "Model's confidence in the category (0=low,1=high)."
-            },
-        },
-        "additionalProperties": False,
-    }
 
     user_payload: Dict[str, Any] = {
         "instructions": (
@@ -243,22 +221,23 @@ def build_prompt_for_email(
         ),
         "few_shot_examples": few_shot_block,
         "incoming_email": incoming_email,
-        "output_schema": output_schema,
         "formatting": (
-            "Return STRICT JSON ONLY, no markdown, no backticks. "
-            "Fields: category (string), task_notes (string), confidence (float in [0,1])."
+            "Return EXACTLY three lines:\n"
+            "CATEGORY: <category>\n"
+            "TASK_NOTES: <one-line task notes>\n"
+            "CONFIDENCE: <float between 0 and 1>\n"
+            "No other text, no JSON, no markdown, no bullet points."
         ),
-        "example_output": {
-            "category": "AMENDMENT - SWAP NOTIONAL",
-            "task_notes": "Request trade capture to amend notional as per client instruction and send revised confirmation.",
-            "confidence": 0.86,
-        },
+        "example_output": (
+            "CATEGORY: AMENDMENT - SWAP NOTIONAL\n"
+            "TASK_NOTES: Request trade capture to amend notional as per client instruction and send revised confirmation.\n"
+            "CONFIDENCE: 0.86"
+        ),
     }
 
     return system_text, user_payload
 
 # ---------- Orchestration ----------
-
 def classify_email(
     openai_client: Any,
     model: str,
@@ -285,18 +264,14 @@ def classify_email(
         max_tokens=400,
     )
 
-    parsed = coerce_json_from_text(raw_text)
-
-    # Optional: minimal sanity check
-    for key in ("category", "task_notes", "confidence"):
-        if key not in parsed:
-            raise ValueError(f"Model output missing '{key}': {parsed}")
+    parsed = parse_classifier_output_text(raw_text)
 
     return {
         "raw_text": raw_text,
         "parsed": parsed,
         "request_headers_used": headers,
     }
+
 
 # ---------- CLI ----------
 

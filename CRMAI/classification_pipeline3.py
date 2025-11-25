@@ -261,12 +261,17 @@ def build_prompt_for_email(
     system_text = (
         "You are an assistant that reads client servicing emails for a corporate banking middle office. "
         "Your job is to assign a case category and propose concise operational task notes. "
-        "You MUST choose the CATEGORY from the allowed list provided. "
-        "You MUST respond using exactly three lines:\n"
+       You MUST output a category EXACTLY as written in the allowed list.
+      Do not abbreviate, paraphrase, infer, or invent any new labels.
+      If you are uncertain between multiple categories, select the closest match from the allowed list.
+      If no category fits, select "Other".
+      If your output category is not an exact string match to one of the allowed categories, your entire answer should be considered invalid.
+         "You MUST respond using exactly three lines:\n"
         "CATEGORY: <category from allowed list>\n"
         "TASK_NOTES: <one-line task notes>\n"
         "CONFIDENCE: <float between 0 and 1>\n"
         "Do not include JSON, markdown, bullet points, or any extra commentary."
+
     )
 
     user_text = (

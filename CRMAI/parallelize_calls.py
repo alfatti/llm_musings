@@ -4,7 +4,7 @@ from openai import OpenAI
 
 client = OpenAI()
 
-# === 1. Your single-call function (returns ONE VALUE for the new column) ===
+# === 1. Your single-call function that RETURNS A DICT ===
 def llm_classify_row(row):
     email_text = row["EMAIL_BODY"]
 
@@ -12,18 +12,32 @@ def llm_classify_row(row):
         resp = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": "Categorize the email."},
-                {"role": "user", "content": email_text},
+                {"role": "system", "content": "Classify and return JSON: {category, notes, conf}."},
+                {"role": "user",  "content": email_text},
             ]
         )
 
-        return resp.choices[0].message.content  # <- this will go into AI_result
+        raw = resp.choices[0].message.content
+
+        # assume you already have a JSON parser from earlier work
+        parsed = coerce_json_from_text(raw)
+
+        # must return a dict with fixed keys
+        return {
+            "category": parsed.get("category"),
+            "notes": parsed.get("notes"),
+            "conf": parsed.get("confidence")
+        }
 
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        return {
+            "category": None,
+            "notes": f"ERROR: {e}",
+            "conf": None
+        }
 
 
-# === 2. Parallel wrapper that returns a Series aligned with df.index ===
+# === 2. Parallel wrapper that returns a Series of DICTS aligned with df.index ===
 def parallel_apply_llm(df, max_workers=12):
     results = {}
 
@@ -37,9 +51,17 @@ def parallel_apply_llm(df, max_workers=12):
             idx = futures[fut]
             results[idx] = fut.result()
 
-    # return a Pandas Series aligned with df
     return pd.Series(results).sort_index()
 
 
-# === 3. Use it ===
+# Series of dicts
 df["AI_result"] = parallel_apply_llm(df)
+
+# Expand dict into columns
+expanded = df["AI_result"].apply(pd.Series)
+
+# Merge back
+df = pd.concat([df, expanded], axis=1)
+
+# OPTIONAL: drop the original dict column
+# df = df.drop(columns=["AI_result"])

@@ -10,8 +10,30 @@ def classy_email(email_text: str) -> dict:
         "task_notes": "Send address update form and notify middle office."
     }
 
+
+FEEDBACK_FILE = "email_feedback.csv"
+
 def save_feedback(email_text, prediction, feedback):
-    print("FEEDBACK:", feedback)
+    row = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "email_text": email_text,
+        "predicted_category": prediction.get("category"),
+        "predicted_confidence": prediction.get("confidence"),
+        "predicted_task_notes": prediction.get("task_notes"),
+        "category_is_correct": feedback.get("category_is_correct"),
+        "category_suggested": feedback.get("category_suggested"),
+        "notes_are_helpful": feedback.get("notes_are_helpful"),
+        "notes_feedback": feedback.get("notes_feedback"),
+    }
+
+    # Append or create CSV
+    if os.path.exists(FEEDBACK_FILE):
+        df = pd.read_csv(FEEDBACK_FILE)
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(FEEDBACK_FILE, index=False)
+    else:
+        pd.DataFrame([row]).to_csv(FEEDBACK_FILE, index=False)
+
 
 def main():
     st.set_page_config(page_title="AI Email Categorization Tool", layout="wide")

@@ -113,29 +113,59 @@ def call_gemini_openai_style(
 # ---------- Simple, reasonably robust JSON parser ----------
 
 import re
+import json
+from typing import Optional, Dict, Any
 
-def parse_classifier_output_text(raw_text: Optional[str]) -> Dict[str, Any]:
+def parse_classifier_output(raw_text: Optional[str]) -> Dict[str, Any]:
+    """
+    Hybrid parser:
+      1. If output looks like JSON with 'category'/'task_notes', try JSON.
+      2. Otherwise, parse plain text with CATEGORY/TASK_NOTES/CONFIDENCE tags.
+    """
     if not raw_text:
         raise ValueError("Empty completion text from model.")
 
-    # Remove accidental fences
     txt = raw_text.strip()
+
+    # Strip accidental fences
     if txt.startswith("```"):
         txt = txt.strip("`").strip()
 
-    # Extract lines
-    cat_match = re.search(r"^CATEGORY:\s*(.+)$", txt, flags=re.MULTILINE | re.IGNORECASE)
-    notes_match = re.search(r"^TASK_NOTES:\s*(.+)$", txt, flags=re.MULTILINE | re.IGNORECASE)
-    conf_match = re.search(r"^CONFIDENCE:\s*([0-9]*\.?[0-9]+)", txt, flags=re.MULTILINE | re.IGNORECASE)
+    # --- 1) JSON path if it looks like JSON ---
+    looks_like_json = txt.lstrip().startswith("{") or '"category"' in txt.lower()
+    if looks_like_json:
+        try:
+            data = json.loads(txt)
+            # minimal keys sanity
+            if all(k in data for k in ("category", "task_notes", "confidence")):
+                # clamp confidence
+                try:
+                    conf = float(data["confidence"])
+                except Exception:
+                    conf = 0.0
+                conf = max(0.0, min(1.0, conf))
+                return {
+                    "category": str(data["category"]).strip(),
+                    "task_notes": str(data["task_notes"]).strip(),
+                    "confidence": conf,
+                }
+        except Exception:
+            # fall through to text parsing
+            pass
+
+    # --- 2) Plain-text tagged parsing ---
+    # Be generous: allow leading text, case-insensitive, not necessarily at line start
+    cat_match = re.search(r"CATEGORY\s*:\s*(.+)", txt, flags=re.IGNORECASE)
+    notes_match = re.search(r"TASK[_\s]*NOTES\s*:\s*(.+)", txt, flags=re.IGNORECASE)
+    conf_match = re.search(r"CONFIDENCE\s*:\s*([0-9]*\.?[0-9]+)", txt, flags=re.IGNORECASE)
 
     if not cat_match or not notes_match or not conf_match:
+        # Help yourself debug: print the raw once when this triggers
         raise ValueError(f"Could not parse classifier output.\nRAW:\n{raw_text}")
 
     category = cat_match.group(1).strip()
     task_notes = notes_match.group(1).strip()
     confidence = float(conf_match.group(1))
-
-    # Clamp confidence just in case
     confidence = max(0.0, min(1.0, confidence))
 
     return {
@@ -143,6 +173,7 @@ def parse_classifier_output_text(raw_text: Optional[str]) -> Dict[str, Any]:
         "task_notes": task_notes,
         "confidence": confidence,
     }
+
 
 
 # ---------- Few-shot prompt builder ----------
@@ -204,16 +235,15 @@ def build_prompt_for_email(
     No JSON, no markdown, no extra commentary.
     """
 
-    system_text = (
-        "You are an assistant that reads client servicing emails for a corporate banking middle office. "
-        "Your job is to assign a case category and propose concise operational task notes. "
-        "Always respond with exactly three lines:\n"
-        "CATEGORY: <category>\n"
-        'TASK_NOTES: <one-line task notes>\n'
-        "CONFIDENCE: <float between 0 and 1>\n"
-        "Do not include JSON, markdown, or any extra text."
-    )
-
+   system_text = (
+       "You are an assistant that reads client servicing emails for a corporate banking middle office. "
+       "Your job is to assign a case category and propose concise operational task notes. "
+       "Prefer to respond in plain text using tags:\n"
+       "CATEGORY: <category>\n"
+       "TASK_NOTES: <task notes>\n"
+       "CONFIDENCE: <float 0-1>.\n"
+       "JSON is also acceptable if it has exactly the keys: category, task_notes, confidence."
+   )
     user_payload: Dict[str, Any] = {
         "instructions": (
             "You are given a few labeled examples of client emails and their categories/task notes. "

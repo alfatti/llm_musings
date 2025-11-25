@@ -1,6 +1,8 @@
 %%writefile ai_email_app.py
 import streamlit as st
 from datetime import datetime
+import json
+import os
 
 # Dummy implementation — replace with your real LLM function
 def classy_email(email_text: str) -> dict:
@@ -11,28 +13,32 @@ def classy_email(email_text: str) -> dict:
     }
 
 
-FEEDBACK_FILE = "email_feedback.csv"
+
+
+FEEDBACK_DIR = "feedback_records"
+
+os.makedirs(FEEDBACK_DIR, exist_ok=True)
 
 def save_feedback(email_text, prediction, feedback):
-    row = {
-        "timestamp": datetime.utcnow().isoformat(),
+    # High-resolution timestamp for uniqueness
+    ts = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S-%f")
+
+    # Filename: feedback_2025-11-25T20-51-12-123456.json
+    filename = f"feedback_{ts}.json"
+    path = os.path.join(FEEDBACK_DIR, filename)
+
+    record = {
+        "timestamp": ts,
         "email_text": email_text,
-        "predicted_category": prediction.get("category"),
-        "predicted_confidence": prediction.get("confidence"),
-        "predicted_task_notes": prediction.get("task_notes"),
-        "category_is_correct": feedback.get("category_is_correct"),
-        "category_suggested": feedback.get("category_suggested"),
-        "notes_are_helpful": feedback.get("notes_are_helpful"),
-        "notes_feedback": feedback.get("notes_feedback"),
+        "prediction": prediction,
+        "feedback": feedback
     }
 
-    # Append or create CSV
-    if os.path.exists(FEEDBACK_FILE):
-        df = pd.read_csv(FEEDBACK_FILE)
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-        df.to_csv(FEEDBACK_FILE, index=False)
-    else:
-        pd.DataFrame([row]).to_csv(FEEDBACK_FILE, index=False)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2)
+
+    print(f"Saved feedback → {path}")
+
 
 
 def main():

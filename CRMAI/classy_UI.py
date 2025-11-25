@@ -14,30 +14,24 @@ def classy_email(email_text: str) -> dict:
 
 
 
-
-FEEDBACK_DIR = "feedback_records"
-
+FEEDBACK_DIR = "feedback_records_csv"
 os.makedirs(FEEDBACK_DIR, exist_ok=True)
 
 def save_feedback(email_text, prediction, feedback):
-    # High-resolution timestamp for uniqueness
     ts = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S-%f")
-
-    # Filename: feedback_2025-11-25T20-51-12-123456.json
-    filename = f"feedback_{ts}.json"
+    filename = f"feedback_{ts}.csv"
     path = os.path.join(FEEDBACK_DIR, filename)
 
-    record = {
+    df = pd.DataFrame([{
         "timestamp": ts,
         "email_text": email_text,
-        "prediction": prediction,
-        "feedback": feedback
-    }
+        **prediction,
+        **feedback
+    }])
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    df.to_csv(path, index=False)
+    print(f"Saved → {path}")
 
-    print(f"Saved feedback → {path}")
 
 
 

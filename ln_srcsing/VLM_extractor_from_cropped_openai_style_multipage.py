@@ -39,6 +39,7 @@ from typing import Optional, List, Tuple, Dict, Any
 
 from pdf2image import convert_from_path
 from PIL import Image  # noqa: F401  (used indirectly via pdf2image PIL.Image)
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --------- Utilities ---------
 
@@ -69,18 +70,30 @@ def parse_cell(cell_ref: str) -> Tuple[Optional[str], Optional[int], Optional[in
     col_idx = col_letter_to_index(col_letters)
     return col_letters.upper(), int(row_str), col_idx
 
-def pdf_to_data_url(pdf_path: str, dpi: int = 350, jpeg_quality: int = 92) -> str:
+def pdf_to_data_urls(pdf_path: str, dpi: int = 350, jpeg_quality: int = 92) -> List[str]:
     """
-    Convert a 1-page PDF to a JPEG data URL. 300–400 DPI is usually best for financial fonts.
+    Convert a multi-page PDF to a list of JPEG data URLs (one per page).
     """
     pages = convert_from_path(pdf_path, dpi=dpi)
     if not pages:
         raise ValueError("No pages found in PDF.")
-    page = pages[0]
-    buf = BytesIO()
-    page.convert("RGB").save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return "data:image/jpeg;base64," + b64
+
+    data_urls: List[str] = []
+    for page in pages:
+        buf = BytesIO()
+        page.convert("RGB").save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        data_urls.append("data:image/jpeg;base64," + b64)
+    return data_urls
+
+
+def pdf_to_data_url(pdf_path: str, dpi: int = 350, jpeg_quality: int = 92) -> str:
+    """
+    Convert a (single-page) PDF to a JPEG data URL.
+    Kept for backward compatibility – just returns the first page.
+    """
+    return pdf_to_data_urls(pdf_path, dpi=dpi, jpeg_quality=jpeg_quality)[0]
+
 
 def coerce_json_from_text(text: Optional[str]) -> Dict[str, Any]:
     """
@@ -279,10 +292,9 @@ def assemble_headers(
     return merged
 
 # --------- Orchestration ---------
-
-def run_extraction(
+def run_extraction_for_data_url(
     openai_client: Any,
-    pdf_path: str,
+    data_url: str,
     variable_name: str,
     section_variants: List[str],
     subsection_variants: List[str],
@@ -290,13 +302,11 @@ def run_extraction(
     cell_hint: Optional[str],
     vicinity_rows: int,
     vicinity_cols: int,
-    dpi: int,
     api_key: str,
     usecase_id: str,
     app_id: str,
     model: str = "gemini-2.5.pro",
 ) -> Dict[str, Any]:
-    data_url = pdf_to_data_url(pdf_path, dpi=dpi)
     system_text, user_payload = build_prompt(
         variable_name=variable_name,
         section_variants=section_variants,
@@ -323,6 +333,42 @@ def run_extraction(
         "parsed": parsed,
         "request_headers_used": headers,  # safe (no bearer)
     }
+
+
+
+def run_extraction(
+    openai_client: Any,
+    pdf_path: str,
+    variable_name: str,
+    section_variants: List[str],
+    subsection_variants: List[str],
+    line_item_variants: List[str],
+    cell_hint: Optional[str],
+    vicinity_rows: int,
+    vicinity_cols: int,
+    dpi: int,
+    api_key: str,
+    usecase_id: str,
+    app_id: str,
+    model: str = "gemini-2.5.pro",
+) -> Dict[str, Any]:
+    # Backwards-compatible single-page wrapper
+    data_url = pdf_to_data_url(pdf_path, dpi=dpi)
+    return run_extraction_for_data_url(
+        openai_client=openai_client,
+        data_url=data_url,
+        variable_name=variable_name,
+        section_variants=section_variants,
+        subsection_variants=subsection_variants,
+        line_item_variants=line_item_variants,
+        cell_hint=cell_hint,
+        vicinity_rows=vicinity_rows,
+        vicinity_cols=vicinity_cols,
+        api_key=api_key,
+        usecase_id=usecase_id,
+        app_id=app_id,
+        model=model,
+    )
 
 # --------- CLI ---------
 
@@ -374,9 +420,11 @@ def main():
     except Exception as e:
         raise SystemExit("Failed to construct OpenAI client with Apigee routing: {}".format(e))
 
-    result = run_extraction(
-        openai_client=openai_client,
-        pdf_path=args.pdf,
+    # Shred the PDF into per-page JPEG data URLs
+    data_urls = pdf_to_data_urls(args.pdf, dpi=args.dpi)
+    num_pages = len(data_urls)
+
+    common_kwargs = dict(
         variable_name=args.variable,
         section_variants=parse_list_arg(args.section_variants),
         subsection_variants=parse_list_arg(args.subsection_variants),
@@ -384,22 +432,53 @@ def main():
         cell_hint=args.cell_hint,
         vicinity_rows=args.vicinity_rows,
         vicinity_cols=args.vicinity_cols,
-        dpi=args.dpi,
         api_key=args.api_key,
         usecase_id=args.usecase_id,
         app_id=args.app_id,
         model=args.model,
     )
 
-    print("\n=== RAW MODEL TEXT ===\n")
-    print(result["raw_text"])
-    print("\n=== PARSED JSON ===\n")
-    print(json.dumps(result["parsed"], indent=2, ensure_ascii=False))
-    print("\n=== REQUEST HEADER SUMMARY (no bearer) ===\n")
-    print(json.dumps(result["request_headers_used"], indent=2))
+    if num_pages == 1:
+        # Backwards-compatible single-page execution
+        result = run_extraction_for_data_url(
+            openai_client=openai_client,
+            data_url=data_urls[0],
+            **common_kwargs,
+        )
+        results = [(1, result)]
+    else:
+        # Parallel extraction across pages using a pool executor
+        results = []
+        with ThreadPoolExecutor() as executor:
+            future_to_page = {
+                executor.submit(
+                    run_extraction_for_data_url,
+                    openai_client,
+                    data_url,
+                    **common_kwargs,
+                ): page_idx + 1
+                for page_idx, data_url in enumerate(data_urls)
+            }
+            for fut in as_completed(future_to_page):
+                page_no = future_to_page[fut]
+                res = fut.result()
+                results.append((page_no, res))
 
-if __name__ == "__main__":
-    main()
+        # Keep pages in order
+        results.sort(key=lambda x: x[0])
+
+    # Print outputs page-by-page
+    for page_no, result in results:
+        print(f"\n=== PAGE {page_no} RAW MODEL TEXT ===\n")
+        print(result["raw_text"])
+        print(f"\n=== PAGE {page_no} PARSED JSON ===\n")
+        print(json.dumps(result["parsed"], indent=2, ensure_ascii=False))
+
+    # Header summary (same for all pages, just show first)
+    if results:
+        first_headers = results[0][1]["request_headers_used"]
+        print("\n=== REQUEST HEADER SUMMARY (no bearer) ===\n")
+        print(json.dumps(first_headers, indent=2))
 
 ####################################################################
 #FIXES

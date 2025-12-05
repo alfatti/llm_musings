@@ -3,32 +3,55 @@
 from typing import Dict, Any, Optional
 import re
 
+import re
+import math
+from typing import Optional, Tuple
 
-def parse_cell_hint(cell_hint: Optional[str]):
+
+def parse_cell_hint(cell_hint) -> Optional[Tuple[int, int]]:
     """
-    Parses a cell hint like 'D17' → (row=17, col_idx=4).
-    Returns None if the hint is missing or malformed.
+    Safely parse a cell hint like 'D17' → (17, 4).
+
+    Returns None if:
+    - input is None
+    - input is NaN / float
+    - input cannot be parsed into Excel-like pattern ([A-Z]+)([0-9]+)
     """
+
+    # Case 1 — None
     if cell_hint is None:
         return None
 
-    # treat several forms as missing
-    if str(cell_hint).strip().upper() in {"", "N/A", "NA", "NONE", "NULL"}:
+    # Case 2 — NaN or float (we reject all floats)
+    if isinstance(cell_hint, float):
+        if math.isnan(cell_hint):    # NaN
+            return None
+        else:
+            # Even if it's like 12.0 → we treat it as invalid cell address.
+            return None
+
+    # Convert everything to string safely
+    s = str(cell_hint).strip()
+
+    # Case 3 — treat these as missing
+    if s.upper() in {"", "N/A", "NA", "NONE", "NULL"}:
         return None
 
-    m = re.match(r"([A-Za-z]+)(\d+)$", cell_hint.strip())
+    # Case 4 — try to parse Excel-like cell ref
+    m = re.match(r"^([A-Za-z]+)(\d+)$", s)
     if not m:
         return None
 
     col_letters, row_str = m.groups()
     row = int(row_str)
 
-    # Convert column letters → number
+    # Convert letters → index (A=1, ..., Z=26, AA=27...)
     col_idx = 0
     for ch in col_letters.upper():
         col_idx = col_idx * 26 + (ord(ch) - ord("A") + 1)
 
     return row, col_idx
+
 
 
 

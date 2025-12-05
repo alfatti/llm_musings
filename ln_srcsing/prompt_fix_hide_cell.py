@@ -1,81 +1,85 @@
 # one helper to build the rectangle, and a new vicinity_desc block that only talks about a rectangle centered on the target cell (no "D17" or similar).
 
-from typing import Dict, Any
-
+from typing import Dict, Any, Optional
 import re
 
-def parse_cell_hint(cell_hint: str):
+
+def parse_cell_hint(cell_hint: Optional[str]):
     """
-    Example: 'D17' -> (row=17, col_idx=4)
+    Parses a cell hint like 'D17' → (row=17, col_idx=4).
+    Returns None if the hint is missing or malformed.
     """
-    m = re.match(r"([A-Za-z]+)(\d+)", cell_hint)
+    if cell_hint is None:
+        return None
+
+    # treat several forms as missing
+    if str(cell_hint).strip().upper() in {"", "N/A", "NA", "NONE", "NULL"}:
+        return None
+
+    m = re.match(r"([A-Za-z]+)(\d+)$", cell_hint.strip())
     if not m:
-        raise ValueError(f"Invalid cell hint: {cell_hint}")
+        return None
 
     col_letters, row_str = m.groups()
     row = int(row_str)
 
-    # Convert column letters → number (A=1, B=2, ..., Z=26, AA=27, etc.)
-    col_idx = letters_to_number(col_letters)
+    # Convert column letters → number
+    col_idx = 0
+    for ch in col_letters.upper():
+        col_idx = col_idx * 26 + (ord(ch) - ord("A") + 1)
 
     return row, col_idx
 
 
-def letters_to_number(col_letters: str) -> int:
-    """
-    Excel-style column letters to 1-based index.
-    """
-    col_letters = col_letters.upper()
-    num = 0
-    for ch in col_letters:
-        num = num * 26 + (ord(ch) - ord("A") + 1)
-    return num
-
 
 def build_vicinity_desc(
-    hint_row: int,
-    hint_col_idx_1_based: int,
+    cell_hint: Optional[str],
     vicinity_rows: int,
     vicinity_cols: int,
 ) -> Dict[str, Any]:
     """
-    Build a vicinity description without exposing the raw cell address (like 'D17').
-    The LLM is told to focus on a rectangular neighborhood centered on the target cell.
+    Build a vicinity description for the LLM.
+    If cell_hint cannot be parsed → return a block instructing the model
+    to return NULL rather than guess.
     """
 
-    # Compute numeric bounds of the rectangle around the target cell
-    row_start = max(1, hint_row - vicinity_rows)
-    row_end = hint_row + vicinity_rows
+    parsed = parse_cell_hint(cell_hint)
 
-    col_start = max(1, hint_col_idx_1_based - vicinity_cols)
-    col_end = hint_col_idx_1_based + vicinity_cols
+    # --------------------------------------------------------
+    # CASE 1 — No valid hint → enforce NULL extraction
+    # --------------------------------------------------------
+    if parsed is None:
+        return {
+            "rectangle_center": None,
+            "rectangle_bounds": None,
+            "instructions": (
+                "The target cell could not be reliably located because no valid row/column "
+                "coordinates were provided. Do NOT guess or infer a value from the page. "
+                "Return both the extracted value and its location as NULL."
+            ),
+        }
+
+    # --------------------------------------------------------
+    # CASE 2 — Valid hint → compute numeric rectangle
+    # --------------------------------------------------------
+    hint_row, hint_col_idx = parsed
+
+    row_start = max(1, hint_row - vicinity_rows)
+    row_end   = hint_row + vicinity_rows
+    col_start = max(1, hint_col_idx - vicinity_cols)
+    col_end   = hint_col_idx + vicinity_cols
 
     narrative = (
-        "Use a vertical-first scanning strategy. Treat the target cell as the center of a "
-        "rectangular neighborhood: look up to {rows_up} rows above and {rows_down} rows below "
-        "the target row, and up to {cols_left} columns to the left and {cols_right} columns "
-        "to the right of the target column. Prioritize matches inside this rectangle. "
-        "If no suitable match is found inside this rectangle, return the value and location "
-        "as NULL rather than guessing."
-    ).format(
-        rows_up=vicinity_rows,
-        rows_down=vicinity_rows,
-        cols_left=vicinity_cols,
-        cols_right=vicinity_cols,
+        "Use a vertical-first scanning strategy. The target cell is represented only by "
+        "numeric row/column indices (no Excel address). Treat this point as the center of "
+        "a rectangular neighborhood. Prioritize values located within this rectangle. "
+        "If no valid value appears inside this rectangle, return NULL rather than guessing."
     )
 
-    vicinity_desc: Dict[str, Any] = {
-        "bias": "vertical-first",
+    return {
         "rectangle_center": {
-            # Numeric indices only; no human-readable cell label
             "row_index": hint_row,
-            "column_index_1_based": hint_col_idx_1_based,
-        },
-        "rectangle_half_extents": {
-            "rows_above": vicinity_rows,
-            "rows_below": vicinity_rows,
-            "cols_left": vicinity_cols,
-            "cols_right": vicinity_cols,
+            "column_index_1_based": hint_col_idx,
         },
         "rectangle_bounds": {
             "row_start_index": row_start,
@@ -86,7 +90,6 @@ def build_vicinity_desc(
         "instructions": narrative,
     }
 
-    return vicinity_desc
 
 # Then in your main prompt-building code you just do:
 

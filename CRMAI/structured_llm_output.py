@@ -1,44 +1,6 @@
-# 1️⃣ Define your allowed categories (Python side)
-ALLOWED_CATEGORIES = [
-    "Account Opening",
-    "Signature Maintenance",
-    "Representative Update",
-    "Treasury / ACH Issue",
-    "Credit Line Inquiry",
-    "KYC / Documentation Update",
-    "Access / Portal Issue",
-    "Other",
-]
-
-
-# 2️⃣ Build the JSON schema with an enum for category
-# This is the key piece: notice "enum": ALLOWED_CATEGORIES.
-case_output_schema = {
-    "name": "case_output",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "category": {
-                "type": "string",
-                "enum": ALLOWED_CATEGORIES,  # 👈 hard constraint
-            },
-            "confidence": {
-                "type": "number",
-            },
-            "task_notes": {
-                "type": "string",
-            },
-        },
-        "required": ["category", "confidence", "task_notes"],
-        "additionalProperties": False,
-    },
-}
-
-# 3️⃣ Use it in response_format in client.responses.create
-from openai import OpenAI
 import json
+from typing import Any, Dict, Optional, Tuple
 
-client = OpenAI()
 
 ALLOWED_CATEGORIES = [
     "Account Opening",
@@ -51,81 +13,80 @@ ALLOWED_CATEGORIES = [
     "Other",
 ]
 
-case_output_schema = {
-    "name": "case_output",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "category": {
-                "type": "string",
-                "enum": ALLOWED_CATEGORIES,
-            },
-            "confidence": {
-                "type": "number",
-            },
-            "task_notes": {
-                "type": "string",
-            },
-        },
-        "required": ["category", "confidence", "task_notes"],
-        "additionalProperties": False,
-    },
-}
 
-prompt = """
-Classify this email into exactly one allowed category and write task notes.
+def call_gemini_openai_style(
+    openai_client: Any,
+    model: str,
+    data_url: str,
+    system_text: str,
+    user_payload: Dict[str, Any],
+    headers: Dict[str, str],
+    temperature: float = 0.0,
+    max_tokens: int = 800,
+) -> Tuple[Optional[str], Any]:
+    """
+    Calls Gemini (OpenAI-style) with a strict JSON schema enforcing
+    allowed categories via enum.
+    """
 
-ALLOWED CATEGORIES:
-- Account Opening
-- Signature Maintenance
-- Representative Update
-- Treasury / ACH Issue
-- Credit Line Inquiry
-- KYC / Documentation Update
-- Access / Portal Issue
-- Other
-
-Email:
-\"\"\"Hi, we need to update the authorized signers on our operating account...\"\"\"
-"""
-
-response = client.responses.create(
-    model="google/gemini-2.5-pro",
-    input=[
+    messages = [
+        {"role": "system", "content": system_text},
         {
             "role": "user",
             "content": [
                 {
-                    "type": "input_text",
-                    "text": prompt,
-                }
+                    "type": "text",
+                    "text": json.dumps(user_payload, ensure_ascii=False),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                },
             ],
-        }
-    ],
-    response_format={
+        },
+    ]
+
+    response_format = {
         "type": "json_schema",
-        "json_schema": case_output_schema,
-    },
-)
+        "json_schema": {
+            "name": "case_classification",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ALLOWED_CATEGORIES,
+                        "description": "Must be exactly one of the allowed categories",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                    },
+                    "task_notes": {
+                        "type": "string",
+                        "description": "Instructions for Middle Office fulfillment",
+                    },
+                },
+                "required": ["category", "confidence", "task_notes"],
+                "additionalProperties": False,
+            },
+        },
+    }
 
-# Extract text JSON
-content = response.output[0].content[0].text
-json_str = content.value if hasattr(content, "value") else content
-parsed = json.loads(json_str)
+    resp = openai_client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        response_format=response_format,
+        extra_headers=headers,  # SDK supplies auth
+    )
 
-print(parsed)
-# -> {
-#   "category": "Signature Maintenance",
-#   "confidence": 0.92,
-#   "task_notes": "Middle Office should update ..."
-# }
+    content = (
+        resp.choices[0].message.content
+        if (resp and getattr(resp, "choices", None))
+        else None
+    )
 
-# 4️⃣ Plugging into your existing classify_email function
-response = client.responses.create(
-    model=model,
-    input=[ ... ],
-    response_format={
-        "type": "json_schema",
-        "json_schema": case_output_schema,
-    },
-)
+    return content, resp
